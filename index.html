@@ -1,0 +1,38 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>班级电子宠物管理系统</title>
+  <link rel="stylesheet" href="styles/main.css" />
+</head>
+<body>
+  <div id="app" class="app">
+    <header class="app-header">
+      <div class="brand">
+        <img src="assets/pet.svg" alt="宠物图标" class="brand-icon" />
+        <div>
+          <h1>班级电子宠物管理系统</h1>
+        </div>
+      </div>
+      <div class="mode-indicator" id="modeIndicator">模式：主页</div>
+      <div class="header-actions" id="headerActions">
+        <button class="ghost" id="homeBtn">主页</button>
+        <button class="ghost" id="teacherBtn">教师模式</button>
+        <button class="ghost" id="displayBtn">展示模式</button>
+      </div>
+      <div class="header-exit" id="headerExit">
+        <button class="danger" id="logoutBtn">退出教师模式</button>
+      </div>
+    </header>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+    <main id="main" class="main"></main>
+
+    <footer class="app-footer"></footer>
+  </div>
+
+  <script src="scripts/app.js"></script>
+</body>
+</html>
