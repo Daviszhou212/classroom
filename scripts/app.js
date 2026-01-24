@@ -60,6 +60,8 @@ const app = {
     displayPage: 0,
     displayPageSize: 16,
     displaySearch: "",
+    displaySelectedId: null,
+    displayFreeze: false,
     displaySearchComposing: false
   }
 };
@@ -213,6 +215,8 @@ function setView(view, params = {}) {
   if (leavingDisplay) {
     app.ui.displaySearch = "";
     app.ui.displayPage = 0;
+    app.ui.displaySelectedId = null;
+    app.ui.displayFreeze = false;
   }
   app.view = view;
   app.params = params;
@@ -411,12 +415,17 @@ async function hashPin(pin) {
 }
 function render() {
   updateHeaderButtons();
+  const displayFreeze = app.ui.displayFreeze;
 
   if (app.view === "display-view") {
     document.body.classList.add("display-mode");
   } else {
     document.body.classList.remove("display-mode");
   }
+  document.body.classList.toggle(
+    "display-modal-open",
+    app.view === "display-view" && Boolean(app.ui.displaySelectedId)
+  );
   const isTeacherLogin = app.view === "teacher-dashboard" && !app.auth.teacher;
   document.body.classList.toggle("auth-mode", isTeacherLogin);
   document.body.classList.toggle("home-mode", app.view === "home");
@@ -471,6 +480,10 @@ function render() {
       setModeIndicator("主页");
       mainEl.innerHTML = renderHome();
       break;
+  }
+
+  if (displayFreeze) {
+    app.ui.displayFreeze = false;
   }
 }
 
@@ -956,21 +969,64 @@ function renderDisplayView() {
   const allStudents = getSortedStudents({ ignoreSearch: true });
   const students = getDisplayStudents();
   const searchTerm = app.ui.displaySearch.trim();
+  const selectedId = app.ui.displaySelectedId;
+  const selectedStudent = selectedId ? getStudentById(selectedId) : null;
+  const selectedPet = selectedStudent ? getPetByStudentId(selectedStudent.id) : null;
+  const modalHtml =
+    selectedStudent && selectedPet
+      ? `
+      <div class="modal-overlay" data-action="close-display-modal">
+        <div class="modal-card" data-action="noop">
+          <h2>宠物详情</h2>
+          <div class="pet-card">
+            <div class="pet-visual">
+              <img src="${getPetIcon(selectedPet)}" alt="宠物" />
+              <div class="badge">等级 ${selectedPet.level}</div>
+            </div>
+            <div class="stat-grid">
+              <div class="stat-row">
+                <span class="stat-label">${escapeHtml(selectedStudent.name)}（学号 ${escapeHtml(
+                  selectedStudent.seatNo
+                )}）</span>
+                <span class="pill">积分余额：${selectedStudent.points || 0}</span>
+              </div>
+              <div class="stat-row">
+                <span class="stat-label">宠物：${escapeHtml(getPetTypeName(selectedPet))}</span>
+              </div>
+              ${renderXpProgress(selectedPet)}
+              <div class="stat-row">
+                <span class="stat-label">饥饿值</span>
+                <div class="progress"><span style="width:${selectedPet.hunger}%"></span></div>
+              </div>
+              <div class="stat-row">
+                <span class="stat-label">心情值</span>
+                <div class="progress"><span style="width:${selectedPet.mood}%"></span></div>
+              </div>
+            </div>
+          </div>
+          <div class="form-actions">
+            <button class="ghost" data-action="close-display-modal">关闭</button>
+          </div>
+        </div>
+      </div>
+    `
+      : "";
   if (!allStudents.length) {
     return `
-      <section class="section display-stage">
+      <section class="section display-stage" data-freeze="${app.ui.displayFreeze ? "true" : "false"}">
         <div class="display-card">
           <h2>暂无学生</h2>
           <p>请先在教师模式添加学生。</p>
           <button class="primary" data-action="go-home">返回主页</button>
         </div>
       </section>
+      ${modalHtml}
     `;
   }
 
   if (!students.length) {
     return `
-      <section class="display-stage">
+      <section class="display-stage" data-freeze="${app.ui.displayFreeze ? "true" : "false"}">
         <div class="display-header">
           <div class="badge">展示模式 · 搜索结果</div>
           <div class="display-search">
@@ -989,6 +1045,7 @@ function renderDisplayView() {
             </div>
           </div>
         </section>
+        ${modalHtml}
     `;
   }
 
@@ -1001,7 +1058,7 @@ function renderDisplayView() {
   const slice = students.slice(start, start + pageSize);
 
   return `
-    <section class="display-stage">
+    <section class="display-stage" data-freeze="${app.ui.displayFreeze ? "true" : "false"}">
       <div class="display-header">
         <div class="badge">展示模式 · 第 ${page + 1} / ${totalPages} 页</div>
         <div class="display-search">
@@ -1027,7 +1084,7 @@ function renderDisplayView() {
                 <span class="pill">积分 ${student.points || 0}</span>
               </div>
               <div class="display-visual">
-                <img src="${getPetIcon(pet)}" alt="宠物" />
+                <img src="${getPetIcon(pet)}" alt="宠物" data-action="open-display-modal" data-id="${student.id}" />
               </div>
               <div class="stat-row">
                 <span class="stat-label">饥饿</span>
@@ -1049,6 +1106,7 @@ function renderDisplayView() {
         <button class="ghost" data-action="go-home">退出展示</button>
       </div>
     </section>
+    ${modalHtml}
   `;
 }
 
@@ -1391,9 +1449,19 @@ function bindEvents() {
         app.ui.studentSelectedId = actionEl.dataset.id;
         render();
         break;
+      case "open-display-modal":
+        app.ui.displaySelectedId = actionEl.dataset.id;
+        app.ui.displayFreeze = true;
+        preserveScrollPosition(render);
+        break;
       case "close-student-modal":
         app.ui.studentSelectedId = null;
         render();
+        break;
+      case "close-display-modal":
+        app.ui.displaySelectedId = null;
+        app.ui.displayFreeze = true;
+        preserveScrollPosition(render);
         break;
       case "noop":
         break;
@@ -1403,7 +1471,16 @@ function bindEvents() {
       case "reset-data":
         if (!confirm("确认清空所有数据？此操作不可撤销。")) return;
         app.data = clone(DEFAULT_DATA);
-        app.ui = { ...app.ui, studentSearch: "", editingStudentId: null, studentSelectedId: null };
+        app.ui = {
+          ...app.ui,
+          studentSearch: "",
+          editingStudentId: null,
+          studentSelectedId: null,
+          displaySearch: "",
+          displayPage: 0,
+          displaySelectedId: null,
+          displayFreeze: false
+        };
         app.auth.teacher = false;
         sessionStorage.removeItem("teacherAuthed");
         saveData();
@@ -1628,6 +1705,14 @@ function preserveInputFocus(inputId, updateFn) {
     if (start !== null && end !== null) {
       next.setSelectionRange(start, end);
     }
+  });
+}
+
+function preserveScrollPosition(updateFn) {
+  const scrollTop = window.scrollY;
+  updateFn();
+  requestAnimationFrame(() => {
+    window.scrollTo({ top: scrollTop, behavior: "auto" });
   });
 }
 

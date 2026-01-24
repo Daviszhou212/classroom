@@ -105,6 +105,10 @@ body::after {
   display: none;
 }
 
+.teacher-mode #homeBtn {
+  display: none;
+}
+
 .teacher-students-mode .header-exit {
   display: none;
 }
@@ -775,6 +779,15 @@ body.display-mode .mode-indicator {
   animation: fadeUp 0.4s ease;
 }
 
+.display-modal-open .display-card.compact {
+  animation: none;
+}
+
+.display-stage[data-freeze="true"] .display-card,
+.display-stage[data-freeze="true"] .display-card.compact {
+  animation: none;
+}
+
 .display-title {
   display: flex;
   align-items: center;
@@ -800,11 +813,22 @@ body.display-mode .mode-indicator {
   border-radius: 14px;
   background: linear-gradient(135deg, #fff4e5, #e8f7f4);
   border: 1px solid rgba(15, 118, 110, 0.12);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
 
 .display-visual img {
   width: 96px;
   height: 96px;
+  cursor: pointer;
+  transition: transform 0.2s ease;
+}
+
+.display-visual img:hover {
+  transform: scale(1.06);
+}
+
+.display-visual img:active {
+  transform: scale(0.98);
 }
 
 .display-card h2 {
