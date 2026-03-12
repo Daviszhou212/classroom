@@ -531,6 +531,22 @@ label {
   background: #eef2f6;
 }
 
+.table .select-col,
+.table .select-cell {
+  width: 64px;
+  text-align: center;
+}
+
+.student-checkbox {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+}
+
+.selected-row td {
+  background: rgba(20, 184, 166, 0.08) !important;
+}
+
 .table-actions {
   display: flex;
   gap: 8px;
@@ -542,6 +558,33 @@ label {
   min-width: auto;
   height: auto;
   padding: 0 6px;
+}
+
+.bulk-toolbar {
+  margin-top: 16px;
+  padding: 14px 16px;
+  border-radius: var(--radius-md);
+  background: rgba(15, 118, 110, 0.08);
+  border: 1px solid rgba(15, 118, 110, 0.14);
+  display: grid;
+  gap: 12px;
+}
+
+.bulk-toolbar-summary {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.bulk-toolbar-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.compact-actions {
+  margin-top: 0;
 }
 
 .progress {
@@ -679,6 +722,34 @@ label {
   color: var(--ink-2);
 }
 
+.undo-section {
+  padding: 0;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.undo-banner {
+  border-radius: var(--radius-lg);
+  padding: 18px 20px;
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  justify-content: space-between;
+  background: linear-gradient(135deg, rgba(249, 115, 22, 0.14), rgba(15, 118, 110, 0.12));
+  border: 1px solid rgba(249, 115, 22, 0.22);
+}
+
+.undo-banner h2 {
+  margin: 10px 0 8px;
+}
+
+.undo-banner p {
+  margin: 0;
+  color: var(--ink-2);
+}
+
 .pill-list {
   display: flex;
   gap: 8px;
@@ -731,6 +802,22 @@ body.display-mode .mode-indicator {
   display: grid;
   gap: 18px;
   padding: 24px;
+}
+
+.display-board {
+  display: grid;
+  gap: 18px;
+  justify-items: center;
+  align-content: start;
+  transition: filter 0.24s ease, transform 0.24s ease, opacity 0.24s ease;
+}
+
+.display-stage--focus-active .display-board {
+  filter: blur(10px) saturate(0.82);
+  transform: scale(0.985);
+  opacity: 0.72;
+  pointer-events: none;
+  user-select: none;
 }
 
 .display-card {
@@ -814,6 +901,32 @@ body.display-mode .mode-indicator {
   padding: 16px;
   border-radius: 20px;
   animation: fadeUp 0.4s ease;
+}
+
+.display-focus-trigger {
+  cursor: pointer;
+  outline: none;
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+}
+
+.display-focus-trigger:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 20px 32px rgba(15, 23, 42, 0.14);
+  border-color: rgba(15, 118, 110, 0.24);
+}
+
+.display-focus-trigger:active {
+  transform: translateY(0) scale(0.99);
+}
+
+.display-focus-trigger:focus-visible {
+  border-color: rgba(15, 118, 110, 0.36);
+  box-shadow: 0 0 0 4px rgba(20, 184, 166, 0.16), 0 20px 32px rgba(15, 23, 42, 0.14);
+}
+
+.display-focus-trigger .display-visual img {
+  cursor: inherit;
+  pointer-events: none;
 }
 
 .display-modal-open .display-card.compact {
@@ -910,6 +1023,161 @@ body.display-mode .mode-indicator {
   border-color: #e2e8f0;
 }
 
+.display-focus-overlay {
+  background: rgba(15, 23, 42, 0.18);
+  backdrop-filter: blur(12px) saturate(0.9);
+}
+
+.display-focus-card {
+  width: min(1120px, 96vw);
+  max-height: calc(100vh - 56px);
+  overflow: auto;
+  padding: 30px;
+  gap: 24px;
+  transform-origin: center;
+  will-change: transform, opacity;
+}
+
+.display-focus-shell {
+  display: grid;
+  gap: 24px;
+  grid-template-columns: minmax(300px, 1fr) minmax(360px, 1.1fr);
+  align-items: stretch;
+}
+
+.display-focus-hero {
+  display: grid;
+  gap: 18px;
+  align-content: start;
+  padding: 22px;
+  border-radius: 24px;
+  background: linear-gradient(145deg, rgba(255, 244, 229, 0.95), rgba(232, 247, 244, 0.98));
+  border: 1px solid rgba(15, 118, 110, 0.16);
+}
+
+.display-focus-badges {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.display-focus-visual {
+  display: grid;
+  gap: 14px;
+  justify-items: center;
+  padding: 18px;
+  min-height: 100%;
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.76);
+}
+
+.display-focus-visual img {
+  width: min(260px, 38vw);
+  height: min(260px, 38vw);
+}
+
+.display-focus-panel {
+  display: grid;
+  gap: 18px;
+  align-content: start;
+}
+
+.display-focus-heading {
+  display: grid;
+  gap: 8px;
+}
+
+.display-focus-heading h2 {
+  margin: 0;
+  font-size: 2.8rem;
+  line-height: 1;
+}
+
+.display-focus-subtitle {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 1.02rem;
+  font-weight: 600;
+}
+
+.display-focus-meta {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.display-focus-interaction {
+  display: grid;
+  gap: 14px;
+  padding: 18px 20px;
+  border-radius: 20px;
+  background: linear-gradient(145deg, rgba(15, 118, 110, 0.08), rgba(249, 115, 22, 0.08));
+  border: 1px dashed rgba(15, 118, 110, 0.24);
+}
+
+.display-focus-interaction-head {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.display-focus-interaction h3 {
+  margin: 0;
+  font-size: 1.15rem;
+}
+
+.display-focus-interaction p {
+  margin: 0;
+  color: var(--ink-2);
+}
+
+.display-focus-placeholder-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.display-focus-placeholder-actions button {
+  min-width: 130px;
+}
+
+.display-focus-nav {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.display-focus-nav button {
+  flex: 1 1 180px;
+}
+
+.display-focus-card-enter {
+  animation: displayFocusEnter 0.3s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.display-focus-card-next .display-focus-shell {
+  animation: displayFocusSwapNext 0.3s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.display-focus-card-prev .display-focus-shell {
+  animation: displayFocusSwapPrev 0.3s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.display-focus-card-enter .display-focus-visual img,
+.display-focus-card-next .display-focus-visual img,
+.display-focus-card-prev .display-focus-visual img {
+  animation: displayFocusPetFloat 0.38s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.display-focus-card-enter .display-focus-panel > *,
+.display-focus-card-next .display-focus-panel > *,
+.display-focus-card-prev .display-focus-panel > * {
+  animation: displayFocusPanelRise 0.34s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
 @keyframes fadeUp {
   from {
     opacity: 0;
@@ -929,6 +1197,61 @@ body.display-mode .mode-indicator {
   to {
     opacity: 1;
     transform: scale(1);
+  }
+}
+
+@keyframes displayFocusEnter {
+  from {
+    opacity: 0;
+    transform: translateY(18px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes displayFocusSwapNext {
+  from {
+    opacity: 0.6;
+    transform: translateX(26px) scale(0.988);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+
+@keyframes displayFocusSwapPrev {
+  from {
+    opacity: 0.6;
+    transform: translateX(-26px) scale(0.988);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+
+@keyframes displayFocusPetFloat {
+  from {
+    transform: translateY(10px) scale(0.965);
+    filter: saturate(0.92);
+  }
+  to {
+    transform: translateY(0) scale(1);
+    filter: saturate(1);
+  }
+}
+
+@keyframes displayFocusPanelRise {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
   }
 }
 
@@ -970,6 +1293,23 @@ body.display-mode .mode-indicator {
     width: 160px;
   }
 
+  .display-focus-card {
+    padding: 22px;
+  }
+
+  .display-focus-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .display-focus-heading h2 {
+    font-size: 2.2rem;
+  }
+
+  .display-focus-visual img {
+    width: min(220px, 56vw);
+    height: min(220px, 56vw);
+  }
+
   .landing-title {
     font-size: 1.9rem;
   }
@@ -978,11 +1318,42 @@ body.display-mode .mode-indicator {
     flex-direction: column;
     align-items: flex-start;
   }
+
+  .undo-banner {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .bulk-toolbar-summary {
+    align-items: flex-start;
+  }
+
+  .table-actions {
+    gap: 6px;
+  }
 }
 
 @media (max-width: 520px) {
   .display-grid {
     grid-template-columns: 1fr;
+  }
+
+  .display-focus-overlay {
+    padding: 14px;
+  }
+
+  .display-focus-card {
+    padding: 18px;
+  }
+
+  .display-focus-placeholder-actions,
+  .display-focus-nav {
+    width: 100%;
+  }
+
+  .display-focus-placeholder-actions button,
+  .display-focus-nav button {
+    flex: 1 1 140px;
   }
 
   .header-actions {
@@ -996,5 +1367,22 @@ body.display-mode .mode-indicator {
 
   .landing {
     width: min(520px, 92vw);
+  }
+
+  .bulk-toolbar,
+  .undo-banner {
+    padding: 14px;
+  }
+
+  .bulk-toolbar-actions,
+  .table-actions,
+  .compact-actions {
+    width: 100%;
+  }
+
+  .bulk-toolbar-actions button,
+  .table-actions button,
+  .compact-actions button {
+    flex: 1 1 140px;
   }
 }

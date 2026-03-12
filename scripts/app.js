@@ -3,15 +3,18 @@ const STORAGE_KEY = "class-pet-mvp";
 const SEAT_LABEL = "座号/学号";
 const PIN_RULE_LABEL = "4-8 位字母或数字";
 const PIN_HELP_TEXT = `${PIN_RULE_LABEL}，建议使用纯数字`;
+const RECOVERY_CODE = "12152205";
 const BACKUP_REMINDER_INTERVAL = 7 * 24 * 60 * 60 * 1000;
+const AWARD_REASON_TEMPLATES = ["课堂表现", "作业完成", "帮助同学", "纪律良好", "积极发言"];
 
 const QUICK_AWARD_PRESETS = {
   1: "课堂表现",
-  2: "积极参与"
+  2: "积极参与",
+  5: "今天特别棒！"
 };
 
 const DEFAULT_DATA = {
-  schemaVersion: 2,
+  schemaVersion: 3,
   students: [],
   pets: [],
   ledger: [],
@@ -43,6 +46,9 @@ const DEFAULT_DATA = {
       defaultHunger: 60,
       defaultMood: 60
     }
+  },
+  meta: {
+    lastUndoBatch: null
   }
 };
 
@@ -64,13 +70,19 @@ const app = {
     teacher: false
   },
   ui: {
+    authScreen: "login",
     studentSearch: "",
     editingStudentId: null,
     studentSelectedId: null,
+    bulkSelectedStudentIds: [],
+    bulkPointsDraft: "",
+    bulkReasonTemplateDraft: "",
+    bulkReasonCustomDraft: "",
     displayPage: 0,
     displayPageSize: 16,
     displaySearch: "",
     displaySelectedId: null,
+    displayMotion: "",
     displayFreeze: false,
     displaySearchComposing: false
   }
@@ -80,6 +92,7 @@ const mainEl = document.getElementById("main");
 const toastEl = document.getElementById("toast");
 const modeIndicatorEl = document.getElementById("modeIndicator");
 const headerActionsEl = document.getElementById("headerActions");
+let displayMotionResetTimer = null;
 
 function clone(value) {
   if (typeof structuredClone === "function") {
@@ -168,8 +181,29 @@ function normalizeData(data) {
     ...DEFAULT_DATA.config.rules,
     ...((data.config || {}).rules || {})
   };
+  normalized.meta = {
+    ...DEFAULT_DATA.meta,
+    ...(data.meta || {})
+  };
+
+  const undoBatch = normalized.meta.lastUndoBatch;
+  if (
+    !undoBatch ||
+    typeof undoBatch !== "object" ||
+    typeof undoBatch.batchId !== "string" ||
+    !Array.isArray(undoBatch.studentIds) ||
+    typeof undoBatch.deltaPoints !== "number" ||
+    typeof undoBatch.reason !== "string" ||
+    typeof undoBatch.createdAt !== "number"
+  ) {
+    normalized.meta.lastUndoBatch = null;
+  }
 
   normalized.students = normalized.students.map(normalizeStudent);
+  normalized.ledger = normalized.ledger.map((entry) => ({
+    ...entry,
+    batchId: typeof entry.batchId === "string" ? entry.batchId : undefined
+  }));
 
   return normalized;
 }
@@ -188,6 +222,7 @@ function syncData() {
     }
   }
   app.data.pets.forEach(ensurePetType);
+  app.ui.bulkSelectedStudentIds = app.ui.bulkSelectedStudentIds.filter((id) => studentIds.has(id));
   saveData();
 }
 
@@ -392,6 +427,114 @@ function matchDisplaySearch(term, student) {
   return initials.includes(keyword);
 }
 
+function getDisplayFocusContext() {
+  const students = getDisplayStudents();
+  const selectedId = app.ui.displaySelectedId;
+  if (!selectedId) {
+    return {
+      students,
+      total: students.length,
+      index: -1,
+      student: null,
+      pet: null,
+      hasFocus: false,
+      invalidSelection: false,
+      hasPrev: false,
+      hasNext: false
+    };
+  }
+
+  const index = students.findIndex((student) => student.id === selectedId);
+  if (index === -1) {
+    return {
+      students,
+      total: students.length,
+      index: -1,
+      student: null,
+      pet: null,
+      hasFocus: false,
+      invalidSelection: true,
+      hasPrev: false,
+      hasNext: false
+    };
+  }
+
+  const student = students[index];
+  const pet = getPetByStudentId(student.id);
+  if (!pet) {
+    return {
+      students,
+      total: students.length,
+      index: -1,
+      student: null,
+      pet: null,
+      hasFocus: false,
+      invalidSelection: true,
+      hasPrev: false,
+      hasNext: false
+    };
+  }
+
+  return {
+    students,
+    total: students.length,
+    index,
+    student,
+    pet,
+    hasFocus: true,
+    invalidSelection: false,
+    hasPrev: index > 0,
+    hasNext: index < students.length - 1
+  };
+}
+
+function openDisplayFocus(studentId) {
+  if (!studentId) return;
+  setDisplayMotion("enter");
+  app.ui.displaySelectedId = studentId;
+  app.ui.displayFreeze = true;
+  preserveScrollPosition(render);
+}
+
+function closeDisplayFocus() {
+  if (!app.ui.displaySelectedId) return;
+  setDisplayMotion("");
+  app.ui.displaySelectedId = null;
+  app.ui.displayFreeze = true;
+  preserveScrollPosition(render);
+}
+
+function stepDisplayFocus(step) {
+  const focus = getDisplayFocusContext();
+  if (!focus.hasFocus) return;
+  const nextStudent = focus.students[focus.index + step];
+  if (!nextStudent) return;
+  setDisplayMotion(step > 0 ? "next" : "prev");
+  app.ui.displaySelectedId = nextStudent.id;
+  app.ui.displayFreeze = true;
+  preserveScrollPosition(render);
+}
+
+function shouldIgnoreDisplayHotkeyTarget(target) {
+  if (!target) return false;
+  if (target.isContentEditable) return true;
+  const tagName = target.tagName;
+  return tagName === "INPUT" || tagName === "TEXTAREA" || tagName === "SELECT";
+}
+
+function setDisplayMotion(motion) {
+  app.ui.displayMotion = motion || "";
+  if (displayMotionResetTimer) {
+    clearTimeout(displayMotionResetTimer);
+    displayMotionResetTimer = null;
+  }
+  if (!motion) return;
+  displayMotionResetTimer = setTimeout(() => {
+    app.ui.displayMotion = "";
+    displayMotionResetTimer = null;
+  }, 320);
+}
+
 function formatTime(timestamp) {
   const date = new Date(timestamp);
   return `${date.toLocaleDateString()} ${date.toLocaleTimeString()}`;
@@ -517,6 +660,79 @@ function addLedgerEntry(entry) {
   });
 }
 
+function clearLastUndoBatch(options = {}) {
+  if (!app.data || !app.data.meta || !app.data.meta.lastUndoBatch) {
+    return;
+  }
+  app.data.meta.lastUndoBatch = null;
+  if (options.save) {
+    saveData();
+  }
+}
+
+function resetBulkAwardDrafts() {
+  app.ui.bulkPointsDraft = "";
+  app.ui.bulkReasonTemplateDraft = "";
+  app.ui.bulkReasonCustomDraft = "";
+}
+
+function clearBulkSelection(options = {}) {
+  app.ui.bulkSelectedStudentIds = [];
+  if (options.clearDrafts) {
+    resetBulkAwardDrafts();
+  }
+}
+
+function getBulkSelectedStudentIds() {
+  const studentIds = new Set(app.data.students.map((student) => student.id));
+  return app.ui.bulkSelectedStudentIds.filter((id) => studentIds.has(id));
+}
+
+function isStudentBulkSelected(studentId) {
+  return getBulkSelectedStudentIds().includes(studentId);
+}
+
+function setBulkSelectedStudentIds(ids) {
+  const studentIds = new Set(app.data.students.map((student) => student.id));
+  const uniqueIds = [];
+  ids.forEach((id) => {
+    if (!studentIds.has(id) || uniqueIds.includes(id)) return;
+    uniqueIds.push(id);
+  });
+  app.ui.bulkSelectedStudentIds = uniqueIds;
+}
+
+function toggleBulkSelectedStudent(studentId, checked) {
+  const currentIds = getBulkSelectedStudentIds();
+  if (checked) {
+    setBulkSelectedStudentIds([...currentIds, studentId]);
+    return;
+  }
+  setBulkSelectedStudentIds(currentIds.filter((id) => id !== studentId));
+}
+
+function selectBulkStudents(ids) {
+  setBulkSelectedStudentIds([...getBulkSelectedStudentIds(), ...ids]);
+}
+
+function getBulkGroupNames() {
+  const groups = app.data.students
+    .map((student) => String(student.group || "").trim())
+    .filter(Boolean);
+  return [...new Set(groups)].sort((a, b) => a.localeCompare(b, "zh-CN"));
+}
+
+function formatBulkGroupLabel(group) {
+  return `${group}${group.endsWith("组") ? "" : "组"}全选`;
+}
+
+function getLastUndoBatchSummary() {
+  const batch = app.data.meta.lastUndoBatch;
+  if (!batch) return "";
+  const count = batch.studentIds.length;
+  return `${formatTime(batch.createdAt)} · ${count} 名学生各加 ${batch.deltaPoints} 分 · ${batch.reason || "加分"}`;
+}
+
 function exportData(options = {}) {
   const now = Date.now();
   app.data.config.lastBackupAt = now;
@@ -566,6 +782,18 @@ async function hashPin(pin) {
   }
   return `legacy-${hash}`;
 }
+
+function isStoredTeacherPinHashValid(value) {
+  const normalized = String(value ?? "").trim();
+  return normalized === "" || /^[a-f0-9]{64}$/.test(normalized) || /^legacy--?\d+$/.test(normalized);
+}
+
+function getTeacherPinState() {
+  const teacherPinHash = String(app.data?.config?.teacherPinHash ?? "").trim();
+  if (!teacherPinHash) return "unset";
+  return isStoredTeacherPinHashValid(teacherPinHash) ? "valid" : "corrupt";
+}
+
 function render() {
   updateHeaderButtons();
   const displayFreeze = app.ui.displayFreeze;
@@ -577,7 +805,7 @@ function render() {
   }
   document.body.classList.toggle(
     "display-modal-open",
-    app.view === "display-view" && Boolean(app.ui.displaySelectedId)
+    app.view === "display-view" && getDisplayFocusContext().hasFocus
   );
   const isTeacherLogin = app.view === "teacher-dashboard" && !app.auth.teacher;
   document.body.classList.toggle("auth-mode", isTeacherLogin);
@@ -660,8 +888,8 @@ function renderHome() {
 }
 
 function renderTeacherLogin() {
-  const hasPin = Boolean(app.data.config.teacherPinHash);
-  if (!hasPin) {
+  const pinState = getTeacherPinState();
+  if (pinState === "unset") {
     return `
       <section class="landing landing-auth">
         <div class="landing-title-wrap">
@@ -691,24 +919,74 @@ function renderTeacherLogin() {
     `;
   }
 
+  if (app.ui.authScreen === "recover") {
+    return `
+      <section class="landing landing-auth">
+        <div class="landing-title-wrap">
+          <img src="assets/pet.svg" alt="宠物图标" class="landing-icon" />
+          <h1 class="landing-title">重新设置教师 PIN</h1>
+          <p class="landing-subtitle">请输入恢复码，并设置新的教师 PIN</p>
+        </div>
+        <div class="landing-card">
+          ${pinState === "corrupt" ? `<p class="notice">检测到教师 PIN 配置已损坏，请使用恢复码重新设置。</p>` : ""}
+          <form class="landing-form" data-action="recover-pin">
+            <div class="landing-field">
+              <label>恢复码</label>
+              <input type="password" name="recoveryCode" inputmode="numeric" autocomplete="one-time-code" required />
+            </div>
+            <div class="landing-field">
+              <label>新 PIN（${PIN_RULE_LABEL}）</label>
+              <input type="password" name="newPin" minlength="4" maxlength="8" autocomplete="new-password" required />
+            </div>
+            <div class="landing-field">
+              <label>确认新 PIN</label>
+              <input type="password" name="newPinConfirm" minlength="4" maxlength="8" autocomplete="new-password" required />
+            </div>
+            <button class="primary" type="submit">验证恢复码并重设 PIN</button>
+          </form>
+          <p class="landing-hint">${PIN_HELP_TEXT}</p>
+          <p id="authError" class="landing-error" role="alert"></p>
+          <div class="landing-links">
+            <button class="text-link" type="button" data-action="go-auth-login">返回登录</button>
+            <button class="text-link" type="button" data-action="go-home">返回主页</button>
+          </div>
+        </div>
+      </section>
+    `;
+  }
+
+  const isCorrupt = pinState === "corrupt";
+  const loginDisabledAttr = isCorrupt ? "disabled" : "";
+  const subtitle = isCorrupt ? "教师 PIN 配置已损坏，请使用恢复码重新设置" : "请输入教师 PIN 进入教师模式";
   return `
     <section class="landing landing-auth">
         <div class="landing-title-wrap">
           <img src="assets/pet.svg" alt="宠物图标" class="landing-icon" />
           <h1 class="landing-title">教师登录</h1>
-          <p class="landing-subtitle">请输入教师 PIN 进入教师模式</p>
-        </div>
+          <p class="landing-subtitle">${subtitle}</p>
+         </div>
       <div class="landing-card">
+        ${isCorrupt ? `<p class="notice">教师 PIN 配置已损坏，请点击“重新设置 PIN”后输入恢复码修复。</p>` : ""}
         <form class="landing-form" data-action="login-pin">
           <div class="landing-field">
             <label>教师 PIN（${PIN_RULE_LABEL}）</label>
-            <input type="password" name="pin" minlength="4" maxlength="8" autocomplete="current-password" required />
+            <input
+              type="password"
+              name="pin"
+              minlength="4"
+              maxlength="8"
+              autocomplete="current-password"
+              ${loginDisabledAttr}
+              ${isCorrupt ? 'placeholder="请先重新设置 PIN"' : ""}
+              required
+            />
           </div>
-          <button class="primary" type="submit">进入教师模式</button>
+          <button class="primary" type="submit" ${loginDisabledAttr}>进入教师模式</button>
         </form>
-        <p class="landing-hint">${PIN_HELP_TEXT}</p>
+        <p class="landing-hint">${isCorrupt ? "当前无法使用原 PIN 登录，请先完成恢复。" : PIN_HELP_TEXT}</p>
         <p id="authError" class="landing-error" role="alert"></p>
         <div class="landing-links">
+          <button class="text-link" type="button" data-action="go-auth-recover">重新设置 PIN</button>
           <button class="text-link" type="button" data-action="go-home">返回主页</button>
         </div>
       </div>
@@ -758,7 +1036,28 @@ function renderTeacherDashboard() {
 function renderTeacherStudents() {
   const students = getSortedStudents();
   const editing = app.ui.editingStudentId ? getStudentById(app.ui.editingStudentId) : null;
+  const selectedIds = getBulkSelectedStudentIds();
+  const selectedIdSet = new Set(selectedIds);
+  const selectedCount = selectedIds.length;
+  const groupNames = getBulkGroupNames();
+  const filteredIds = students.map((student) => student.id);
+  const hasUndoBatch = Boolean(app.data.meta.lastUndoBatch);
+
   return `
+    ${hasUndoBatch ? `
+      <section class="section undo-section">
+        <div class="undo-banner">
+          <div>
+            <span class="badge">可撤销</span>
+            <h2>最近一次批量加分可撤销</h2>
+            <p>${escapeHtml(getLastUndoBatchSummary())}</p>
+          </div>
+          <div class="form-actions">
+            <button class="ghost" data-action="undo-last-bulk-award">撤销最近一次批量操作</button>
+          </div>
+        </div>
+      </section>
+    ` : ""}
     <section class="section">
       <h2>${editing ? "编辑学生" : "新增学生"}</h2>
       <form data-action="save-student">
@@ -792,6 +1091,25 @@ function renderTeacherStudents() {
           <input id="studentSearch" placeholder="姓名 / 拼音 / ${SEAT_LABEL} / 分组" value="${escapeHtml(app.ui.studentSearch)}" />
         </div>
       </div>
+      ${students.length ? `
+        <div class="bulk-toolbar">
+          <div class="bulk-toolbar-summary">
+            <span class="badge">已选 ${selectedCount} 名</span>
+            <span class="field-hint">搜索条件变化不会清空已选学生。</span>
+          </div>
+          <div class="bulk-toolbar-actions">
+            <button class="ghost small" data-action="select-bulk-filtered" ${filteredIds.length ? "" : "disabled"}>全选当前筛选结果</button>
+            ${groupNames
+              .map(
+                (group) => `
+                  <button class="ghost small" data-action="select-bulk-group" data-group="${escapeHtml(group)}">${escapeHtml(formatBulkGroupLabel(group))}</button>
+                `
+              )
+              .join("")}
+            <button class="ghost small" data-action="clear-bulk-selection" ${selectedCount ? "" : "disabled"}>清空选择</button>
+          </div>
+        </div>
+      ` : ""}
       <div class="section-header">
         <h2>学生列表</h2>
         <button class="primary" data-action="go-dashboard">返回仪表盘</button>
@@ -800,6 +1118,7 @@ function renderTeacherStudents() {
         <table class="table">
           <thead>
             <tr>
+              <th class="select-col">选择</th>
               <th>${SEAT_LABEL}</th>
               <th>姓名</th>
               <th>分组</th>
@@ -811,7 +1130,16 @@ function renderTeacherStudents() {
             ${students
               .map(
                 (student) => `
-              <tr>
+              <tr class="${selectedIdSet.has(student.id) ? "selected-row" : ""}">
+                <td class="select-cell">
+                  <input
+                    type="checkbox"
+                    class="student-checkbox"
+                    data-action="toggle-bulk-student"
+                    data-id="${student.id}"
+                    ${selectedIdSet.has(student.id) ? "checked" : ""}
+                  />
+                </td>
                 <td>${escapeHtml(student.seatNo)}</td>
                 <td>${escapeHtml(student.name)}</td>
                 <td>${escapeHtml(student.group || "-")}</td>
@@ -820,6 +1148,7 @@ function renderTeacherStudents() {
                   <div class="table-actions">
                     <button class="ghost small" data-action="quick-student-award" data-id="${student.id}" data-points="1">+1</button>
                     <button class="ghost small" data-action="quick-student-award" data-id="${student.id}" data-points="2">+2</button>
+                    <button class="ghost small" data-action="quick-student-award" data-id="${student.id}" data-points="5">+5</button>
                     <button class="text" data-action="view-student" data-id="${student.id}">详情</button>
                     <button class="text" data-action="edit-student" data-id="${student.id}">编辑</button>
                     <button class="text" data-action="delete-student" data-id="${student.id}">删除</button>
@@ -833,11 +1162,65 @@ function renderTeacherStudents() {
         </table>
       ` : `<p class="notice">还没有学生，请先添加。</p>`}
     </section>
+
+    ${selectedCount ? `
+      <section class="section">
+        <div class="section-header">
+          <h2>批量加分</h2>
+          <span class="pill">统一给已选学生发放同样的奖励</span>
+        </div>
+        <div class="form-actions compact-actions">
+          <button class="ghost small" data-action="bulk-quick-award" data-points="1">已选学生 +1</button>
+          <button class="ghost small" data-action="bulk-quick-award" data-points="2">已选学生 +2</button>
+          <button class="ghost small" data-action="bulk-quick-award" data-points="5">已选学生 +5</button>
+        </div>
+        <form data-action="bulk-award">
+          <div class="form-row">
+            <div>
+              <label>自定义加分数值</label>
+              <input
+                id="bulkPointsDraft"
+                name="bulkPoints"
+                type="number"
+                min="1"
+                step="1"
+                placeholder="例如：3"
+                value="${escapeHtml(app.ui.bulkPointsDraft)}"
+              />
+            </div>
+            <div>
+              <label>理由模板</label>
+              <select id="bulkReasonTemplateDraft" name="bulkReasonTemplate">
+                <option value="">请选择理由</option>
+                ${AWARD_REASON_TEMPLATES
+                  .map(
+                    (reason) => `
+                      <option value="${escapeHtml(reason)}" ${app.ui.bulkReasonTemplateDraft === reason ? "selected" : ""}>${escapeHtml(reason)}</option>
+                    `
+                  )
+                  .join("")}
+              </select>
+            </div>
+            <div>
+              <label>自定义理由（可选）</label>
+              <input
+                id="bulkReasonCustomDraft"
+                name="bulkReasonCustom"
+                placeholder="例如：小组合作认真"
+                value="${escapeHtml(app.ui.bulkReasonCustomDraft)}"
+              />
+            </div>
+          </div>
+          <div class="form-actions">
+            <button class="primary" type="submit">批量加分</button>
+          </div>
+        </form>
+      </section>
+    ` : ""}
   `;
 }
 function renderTeacherRewards() {
   const students = getSortedStudents();
-  const reasons = ["课堂表现", "作业完成", "帮助同学", "纪律良好", "积极发言"];
   return `
     <section class="section">
       <h2>发放奖励（仅加分）</h2>
@@ -870,7 +1253,7 @@ function renderTeacherRewards() {
               <label>理由模板</label>
               <select name="reasonTemplate">
                 <option value="">请选择理由</option>
-                ${reasons.map((r) => `<option value="${escapeHtml(r)}">${escapeHtml(r)}</option>`).join("")}
+                ${AWARD_REASON_TEMPLATES.map((r) => `<option value="${escapeHtml(r)}">${escapeHtml(r)}</option>`).join("")}
               </select>
             </div>
             <div>
@@ -1131,75 +1514,113 @@ function renderStudentView() {
 
 function renderDisplayView() {
   const allStudents = getSortedStudents({ ignoreSearch: true });
-  const students = getDisplayStudents();
   const searchTerm = app.ui.displaySearch.trim();
-  const selectedId = app.ui.displaySelectedId;
-  const selectedStudent = selectedId ? getStudentById(selectedId) : null;
-  const selectedPet = selectedStudent ? getPetByStudentId(selectedStudent.id) : null;
-  const modalHtml =
-    selectedStudent && selectedPet
-      ? `
-      <div class="modal-overlay" data-action="close-display-modal">
-        <div class="modal-card" data-action="noop">
-          <h2>宠物详情</h2>
-          <div class="pet-card">
-            <div class="pet-visual">
-              <img src="${getPetIcon(selectedPet)}" alt="宠物" />
-              <div class="badge">等级 ${selectedPet.level}</div>
-            </div>
-            <div class="stat-grid">
-              <div class="stat-row">
-                <span class="stat-label">${escapeHtml(selectedStudent.name)}（${SEAT_LABEL} ${escapeHtml(
-                  selectedStudent.seatNo
-                )}）</span>
-                <span class="pill">积分余额：${selectedStudent.points || 0}</span>
+  let focus = getDisplayFocusContext();
+  if (focus.invalidSelection) {
+    app.ui.displaySelectedId = null;
+    focus = getDisplayFocusContext();
+  }
+
+  const students = focus.students;
+  const hasFocus = focus.hasFocus;
+  const focusMotionClass = hasFocus && app.ui.displayMotion ? ` display-focus-card-${app.ui.displayMotion}` : "";
+  const focusHtml = hasFocus
+    ? `
+      <div class="modal-overlay display-focus-overlay" data-action="close-display-modal">
+        <div
+          class="modal-card display-focus-card${focusMotionClass}"
+          data-action="noop"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="displayFocusTitle"
+        >
+          <div class="display-focus-shell">
+            <section class="display-focus-hero">
+              <div class="display-focus-badges">
+                <span class="badge">单人聚焦</span>
+                <span class="pill">宠物 ${escapeHtml(getPetTypeName(focus.pet))}</span>
               </div>
-              <div class="stat-row">
-                <span class="stat-label">宠物：${escapeHtml(getPetTypeName(selectedPet))}</span>
+              <div class="display-focus-visual">
+                <img src="${getPetIcon(focus.pet)}" alt="${escapeHtml(focus.student.name)}的宠物" />
+                <div class="badge">等级 ${focus.pet.level}</div>
               </div>
-              ${renderXpProgress(selectedPet)}
-              <div class="stat-row">
-                <span class="stat-label">饥饿值</span>
-                <div class="progress"><span style="width:${selectedPet.hunger}%"></span></div>
+            </section>
+            <section class="display-focus-panel">
+              <div class="display-focus-heading">
+                <h2 id="displayFocusTitle">${escapeHtml(focus.student.name)}</h2>
+                <p class="display-focus-subtitle">${SEAT_LABEL} ${escapeHtml(focus.student.seatNo)}</p>
               </div>
-              <div class="stat-row">
-                <span class="stat-label">心情值</span>
-                <div class="progress"><span style="width:${selectedPet.mood}%"></span></div>
+              <div class="display-focus-meta">
+                <span class="pill">积分 ${focus.student.points || 0}</span>
+                ${focus.student.group ? `<span class="pill">分组 ${escapeHtml(focus.student.group)}</span>` : ""}
+                <span class="pill">宠物 ${escapeHtml(getPetTypeName(focus.pet))}</span>
               </div>
-            </div>
+              <div class="stat-grid">
+                ${renderXpProgress(focus.pet)}
+                <div class="stat-row">
+                  <span class="stat-label">饥饿值</span>
+                  <div class="progress"><span style="width:${focus.pet.hunger}%"></span></div>
+                </div>
+                <div class="stat-row">
+                  <span class="stat-label">心情值</span>
+                  <div class="progress"><span style="width:${focus.pet.mood}%"></span></div>
+                </div>
+              </div>
+              <div class="display-focus-interaction">
+                <div class="display-focus-interaction-head">
+                  <h3>互动区（即将开放）</h3>
+                  <span class="pill">首版仅展示</span>
+                </div>
+                <p>这里会承载课堂展示时学生与宠物的即时互动反馈。</p>
+                <div class="display-focus-placeholder-actions">
+                  <button class="ghost" type="button" disabled>喂一口</button>
+                  <button class="ghost" type="button" disabled>打招呼</button>
+                  <button class="ghost" type="button" disabled>鼓励一下</button>
+                </div>
+              </div>
+            </section>
           </div>
-          <div class="form-actions">
-            <button class="ghost" data-action="close-display-modal">关闭</button>
+          <div class="display-focus-nav">
+            <button class="ghost" type="button" data-action="display-prev-student" ${focus.hasPrev ? "" : "disabled"}>
+              上一位
+            </button>
+            <button class="ghost" type="button" data-action="display-next-student" ${focus.hasNext ? "" : "disabled"}>
+              下一位
+            </button>
+            <button class="primary" type="button" data-action="close-display-modal">返回看板</button>
           </div>
         </div>
       </div>
     `
-      : "";
+    : "";
   if (!allStudents.length) {
     return `
       <section class="section display-stage" data-freeze="${app.ui.displayFreeze ? "true" : "false"}">
-        <div class="display-card">
-          <h2>暂无学生</h2>
-          <p>请先在教师模式添加学生。</p>
-          <button class="primary" data-action="go-home">返回主页</button>
+        <div class="display-board">
+          <div class="display-card">
+            <h2>暂无学生</h2>
+            <p>请先在教师模式添加学生。</p>
+            <button class="primary" data-action="go-home">返回主页</button>
+          </div>
         </div>
+        ${focusHtml}
       </section>
-      ${modalHtml}
     `;
   }
 
   if (!students.length) {
     return `
       <section class="display-stage" data-freeze="${app.ui.displayFreeze ? "true" : "false"}">
-        <div class="display-header">
-          <div class="badge">展示模式 · 搜索结果</div>
-          <div class="display-search">
-            <span class="search-label">搜索</span>
-            <input id="displaySearch" placeholder="姓名 / 拼音 / ${SEAT_LABEL}" value="${escapeHtml(searchTerm)}" />
-            <button class="ghost small" data-action="clear-display-search">清除</button>
+        <div class="display-board">
+          <div class="display-header">
+            <div class="badge">展示模式 · 搜索结果</div>
+            <div class="display-search">
+              <span class="search-label">搜索</span>
+              <input id="displaySearch" placeholder="姓名 / 拼音 / ${SEAT_LABEL}" value="${escapeHtml(searchTerm)}" />
+              <button class="ghost small" data-action="clear-display-search">清除</button>
+            </div>
+            <div class="pill">共 0 名</div>
           </div>
-          <div class="pill">共 0 名</div>
-        </div>
           <div class="display-card compact">
             <h2>未找到匹配的学生</h2>
             <p>请尝试更短的姓名，或清除搜索条件。</p>
@@ -1208,8 +1629,9 @@ function renderDisplayView() {
               <button class="ghost" data-action="go-home">退出展示</button>
             </div>
           </div>
-        </section>
-        ${modalHtml}
+        </div>
+        ${focusHtml}
+      </section>
     `;
   }
 
@@ -1220,57 +1642,69 @@ function renderDisplayView() {
 
   const start = page * pageSize;
   const slice = students.slice(start, start + pageSize);
+  const cardsHtml = slice
+    .map((student) => {
+      const pet = getPetByStudentId(student.id);
+      if (!pet) return "";
+      return `
+        <article
+          class="display-card compact display-focus-trigger"
+          tabindex="0"
+          role="button"
+          aria-haspopup="dialog"
+          aria-label="查看 ${escapeHtml(student.name)} 的宠物聚焦展示"
+          data-action="open-display-modal"
+          data-id="${student.id}"
+        >
+          <div class="display-title">
+            <h3>${escapeHtml(student.name)}</h3>
+            <span class="pill">${SEAT_LABEL} ${escapeHtml(student.seatNo)}</span>
+          </div>
+          <div class="display-meta">
+            <span class="pill">宠物 ${escapeHtml(getPetTypeName(pet))}</span>
+            <span class="pill">等级 ${pet.level}</span>
+            <span class="pill">积分 ${student.points || 0}</span>
+          </div>
+          <div class="display-visual">
+            <img src="${getPetIcon(pet)}" alt="${escapeHtml(student.name)}的宠物" />
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">饥饿</span>
+            <div class="progress"><span style="width:${pet.hunger}%"></span></div>
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">心情</span>
+            <div class="progress"><span style="width:${pet.mood}%"></span></div>
+          </div>
+          ${renderXpProgress(pet, { compact: true })}
+        </article>
+      `;
+    })
+    .join("");
 
   return `
-    <section class="display-stage" data-freeze="${app.ui.displayFreeze ? "true" : "false"}">
-      <div class="display-header">
-        <div class="badge">展示模式 · 第 ${page + 1} / ${totalPages} 页</div>
-        <div class="display-search">
-          <span class="search-label">搜索</span>
-          <input id="displaySearch" placeholder="姓名 / 拼音 / ${SEAT_LABEL}" value="${escapeHtml(searchTerm)}" />
-          <button class="ghost small" data-action="clear-display-search">清除</button>
+    <section class="display-stage${hasFocus ? " display-stage--focus-active" : ""}" data-freeze="${app.ui.displayFreeze ? "true" : "false"}">
+      <div class="display-board" ${hasFocus ? 'aria-hidden="true"' : ""}>
+        <div class="display-header">
+          <div class="badge">展示模式 · 第 ${page + 1} / ${totalPages} 页</div>
+          <div class="display-search">
+            <span class="search-label">搜索</span>
+            <input id="displaySearch" placeholder="姓名 / 拼音 / ${SEAT_LABEL}" value="${escapeHtml(searchTerm)}" />
+            <button class="ghost small" data-action="clear-display-search">清除</button>
+          </div>
+          <div class="pill">共 ${students.length} 名${searchTerm ? "（已筛选）" : ""}</div>
         </div>
-        <div class="pill">共 ${students.length} 名${searchTerm ? "（已筛选）" : ""}</div>
+        <div class="display-grid">
+          ${cardsHtml}
+        </div>
+        <div class="display-actions">
+          <button class="ghost" data-action="display-prev-page" ${page === 0 ? "disabled" : ""}>上一页</button>
+          <button class="ghost" data-action="display-next-page" ${page >= totalPages - 1 ? "disabled" : ""}>下一页</button>
+          <button class="ghost" data-action="go-home">退出展示</button>
+        </div>
       </div>
-      <div class="display-grid">
-        ${slice
-          .map((student) => {
-            const pet = getPetByStudentId(student.id);
-            return `
-            <div class="display-card compact">
-              <div class="display-title">
-                <h3>${escapeHtml(student.name)}</h3>
-                <span class="pill">${SEAT_LABEL} ${escapeHtml(student.seatNo)}</span>
-              </div>
-              <div class="display-meta">
-                <span class="pill">宠物 ${escapeHtml(getPetTypeName(pet))}</span>
-                <span class="pill">等级 ${pet.level}</span>
-                <span class="pill">积分 ${student.points || 0}</span>
-              </div>
-              <div class="display-visual">
-                <img src="${getPetIcon(pet)}" alt="宠物" data-action="open-display-modal" data-id="${student.id}" />
-              </div>
-              <div class="stat-row">
-                <span class="stat-label">饥饿</span>
-                <div class="progress"><span style="width:${pet.hunger}%"></span></div>
-              </div>
-              <div class="stat-row">
-                <span class="stat-label">心情</span>
-                <div class="progress"><span style="width:${pet.mood}%"></span></div>
-              </div>
-              ${renderXpProgress(pet, { compact: true })}
-            </div>
-          `;
-          })
-          .join("")}
-      </div>
-      <div class="display-actions">
-        <button class="ghost" data-action="display-prev-page" ${page === 0 ? "disabled" : ""}>上一页</button>
-        <button class="ghost" data-action="display-next-page" ${page >= totalPages - 1 ? "disabled" : ""}>下一页</button>
-        <button class="ghost" data-action="go-home">退出展示</button>
-      </div>
+      ${focusHtml}
     </section>
-    ${modalHtml}
   `;
 }
 
@@ -1320,24 +1754,133 @@ function renderLedgerTable(entries) {
     </table>
   `;
 }
-function awardPoints(studentId, points, reason) {
-  const student = getStudentById(studentId);
-  if (!student) return;
+
+function applyAward(student, points, reason, options = {}) {
+  if (!student) return false;
   const delta = Number(points);
   if (!Number.isFinite(delta) || delta <= 0) {
-    showToast("请输入有效的加分数值", "warning");
-    return;
+    if (!options.silent) {
+      showToast("请输入有效的加分数值", "warning");
+    }
+    return false;
   }
+
+  if (options.invalidateUndo !== false) {
+    clearLastUndoBatch();
+  }
+
   student.points = (student.points || 0) + delta;
   addLedgerEntry({
     timestamp: Date.now(),
     studentId: student.id,
     type: "award",
     deltaPoints: delta,
-    reason
+    reason,
+    batchId: options.batchId
   });
+
+  if (options.save !== false) {
+    saveData();
+  }
+  if (!options.silent) {
+    showToast("加分成功", "info");
+  }
+  return true;
+}
+
+function awardPoints(studentId, points, reason, options = {}) {
+  const student = getStudentById(studentId);
+  return applyAward(student, points, reason, options);
+}
+
+function rememberLastUndoBatch(batchId, studentIds, points, reason) {
+  app.data.meta.lastUndoBatch = {
+    batchId,
+    studentIds: [...studentIds],
+    deltaPoints: points,
+    reason,
+    createdAt: Date.now()
+  };
+}
+
+function bulkAwardStudents(studentIds, points, reason) {
+  const delta = Number(points);
+  const ids = [...new Set(studentIds)].filter(Boolean);
+  if (!ids.length) {
+    showToast("请先选择学生", "warning");
+    return false;
+  }
+  if (!Number.isFinite(delta) || delta <= 0 || !Number.isInteger(delta)) {
+    showToast("批量加分数值需为正整数", "warning");
+    return false;
+  }
+
+  const students = ids.map((id) => getStudentById(id)).filter(Boolean);
+  if (students.length !== ids.length) {
+    setBulkSelectedStudentIds(students.map((student) => student.id));
+    showToast("部分已选学生不存在，请重新确认后再试", "warning");
+    return false;
+  }
+
+  const batchId = makeId("batch");
+  students.forEach((student) => {
+    applyAward(student, delta, reason, {
+      batchId,
+      invalidateUndo: false,
+      save: false,
+      silent: true
+    });
+  });
+  rememberLastUndoBatch(batchId, ids, delta, reason);
   saveData();
-  showToast("加分成功", "info");
+  clearBulkSelection({ clearDrafts: true });
+  showToast(`已为 ${students.length} 名学生各加 ${delta} 分`, "info");
+  return true;
+}
+
+function undoLastBulkAward() {
+  const batch = app.data.meta.lastUndoBatch;
+  if (!batch) {
+    showToast("没有可撤销的批量操作", "warning");
+    return false;
+  }
+
+  const students = batch.studentIds.map((id) => getStudentById(id));
+  const entries = app.data.ledger.filter(
+    (entry) => entry.batchId === batch.batchId && entry.type === "award"
+  );
+
+  const matchedEntries = batch.studentIds.map((studentId) =>
+    entries.find(
+      (entry) =>
+        entry.studentId === studentId &&
+        entry.deltaPoints === batch.deltaPoints &&
+        entry.reason === batch.reason
+    )
+  );
+
+  const invalidState =
+    entries.length !== batch.studentIds.length ||
+    students.some((student) => !student || (student.points || 0) < batch.deltaPoints) ||
+    matchedEntries.some((entry) => !entry) ||
+    matchedEntries.length !== batch.studentIds.length;
+
+  if (invalidState) {
+    clearLastUndoBatch({ save: true });
+    showToast("最近一次批量操作已无法撤销", "warning");
+    return false;
+  }
+
+  students.forEach((student) => {
+    student.points -= batch.deltaPoints;
+  });
+
+  const removeIds = new Set(matchedEntries.map((entry) => entry.id));
+  app.data.ledger = app.data.ledger.filter((entry) => !removeIds.has(entry.id));
+  clearLastUndoBatch();
+  saveData();
+  showToast(`已撤销最近一次批量加分（${batch.studentIds.length} 名）`, "info");
+  return true;
 }
 
 function feedStudent(studentId, catalogId) {
@@ -1349,6 +1892,7 @@ function feedStudent(studentId, catalogId) {
     showToast("积分不足，无法喂养", "warning");
     return;
   }
+  clearLastUndoBatch();
   const hungerEffect = Number(item.effects.hunger || 0);
   student.points -= item.pricePoints;
   pet.hunger = clamp(pet.hunger - hungerEffect, 0, 100);
@@ -1385,6 +1929,10 @@ function validateImport(data) {
   if (!Array.isArray(data.pets)) errors.push("缺少 pets 列表");
   if (!Array.isArray(data.ledger)) errors.push("缺少 ledger 列表");
   if (!data.config || typeof data.config !== "object") errors.push("缺少 config");
+  if (data.config && typeof data.config === "object") {
+    const teacherPinHash = typeof data.config.teacherPinHash === "string" ? data.config.teacherPinHash.trim() : "";
+    if (!isStoredTeacherPinHashValid(teacherPinHash)) errors.push("教师 PIN 配置无效");
+  }
   return errors;
 }
 
@@ -1402,9 +1950,11 @@ function importData(file) {
         return;
       }
       app.data = normalizeData(parsed);
+      app.data.meta.lastUndoBatch = null;
       syncData();
       app.ui.studentSelectedId = null;
       app.ui.editingStudentId = null;
+      clearBulkSelection({ clearDrafts: true });
       showToast("导入成功", "info");
       setView("teacher-dashboard");
     } catch (err) {
@@ -1499,7 +2049,9 @@ function importStudentsCsv(file) {
     app.data.students = students;
     app.data.pets = [];
     app.data.ledger = [];
+    app.data.meta.lastUndoBatch = null;
     syncData();
+    clearBulkSelection({ clearDrafts: true });
     showToast("学生名单导入成功", "info");
     setView("teacher-students");
   };
@@ -1520,11 +2072,23 @@ function bindEvents() {
 
     switch (action) {
       case "go-home":
+        app.ui.authScreen = "login";
         setView("home");
         break;
       case "go-teacher":
       case "go-dashboard":
+        if (!app.auth.teacher) {
+          app.ui.authScreen = "login";
+        }
         setView("teacher-dashboard");
+        break;
+      case "go-auth-recover":
+        app.ui.authScreen = "recover";
+        render();
+        break;
+      case "go-auth-login":
+        app.ui.authScreen = "login";
+        render();
         break;
       case "go-students":
         if (!app.auth.teacher) {
@@ -1561,7 +2125,39 @@ function bindEvents() {
         setView("display-view");
         break;
       case "logout-teacher":
+        app.ui.authScreen = "login";
         logoutTeacher();
+        break;
+      case "toggle-bulk-student":
+        toggleBulkSelectedStudent(actionEl.dataset.id, actionEl.checked);
+        render();
+        break;
+      case "select-bulk-filtered":
+        selectBulkStudents(getSortedStudents().map((student) => student.id));
+        render();
+        break;
+      case "select-bulk-group":
+        selectBulkStudents(
+          app.data.students
+            .filter((student) => String(student.group || "").trim() === actionEl.dataset.group)
+            .map((student) => student.id)
+        );
+        render();
+        break;
+      case "clear-bulk-selection":
+        clearBulkSelection();
+        render();
+        break;
+      case "bulk-quick-award": {
+        const delta = Number(actionEl.dataset.points || 0);
+        const reason = QUICK_AWARD_PRESETS[delta] || "加分";
+        bulkAwardStudents(getBulkSelectedStudentIds(), delta, reason);
+        render();
+        break;
+      }
+      case "undo-last-bulk-award":
+        undoLastBulkAward();
+        render();
         break;
       case "quick-student-award": {
         const studentId = actionEl.dataset.id;
@@ -1585,9 +2181,11 @@ function bindEvents() {
           ? `${student.name}（${SEAT_LABEL} ${student.seatNo}）`
           : "该学生";
         if (!confirm(`确认删除 ${studentLabel} 及其宠物档案吗？`)) return;
+        clearLastUndoBatch();
         app.data.students = app.data.students.filter((item) => item.id !== actionEl.dataset.id);
         app.data.pets = app.data.pets.filter((pet) => pet.studentId !== actionEl.dataset.id);
         app.data.ledger = app.data.ledger.filter((entry) => entry.studentId !== actionEl.dataset.id);
+        setBulkSelectedStudentIds(getBulkSelectedStudentIds().filter((id) => id !== actionEl.dataset.id));
         saveData();
         render();
         showToast("已删除学生", "warning");
@@ -1614,18 +2212,20 @@ function bindEvents() {
         render();
         break;
       case "open-display-modal":
-        app.ui.displaySelectedId = actionEl.dataset.id;
-        app.ui.displayFreeze = true;
-        preserveScrollPosition(render);
+        openDisplayFocus(actionEl.dataset.id);
         break;
       case "close-student-modal":
         app.ui.studentSelectedId = null;
         render();
         break;
       case "close-display-modal":
-        app.ui.displaySelectedId = null;
-        app.ui.displayFreeze = true;
-        preserveScrollPosition(render);
+        closeDisplayFocus();
+        break;
+      case "display-prev-student":
+        stepDisplayFocus(-1);
+        break;
+      case "display-next-student":
+        stepDisplayFocus(1);
         break;
       case "noop":
         break;
@@ -1645,12 +2245,18 @@ function bindEvents() {
         app.data = clone(DEFAULT_DATA);
         app.ui = {
           ...app.ui,
+          authScreen: "login",
           studentSearch: "",
           editingStudentId: null,
           studentSelectedId: null,
+          bulkSelectedStudentIds: [],
+          bulkPointsDraft: "",
+          bulkReasonTemplateDraft: "",
+          bulkReasonCustomDraft: "",
           displaySearch: "",
           displayPage: 0,
           displaySelectedId: null,
+          displayMotion: "",
           displayFreeze: false
         };
         app.auth.teacher = false;
@@ -1685,6 +2291,42 @@ function bindEvents() {
     }
   });
 
+  document.addEventListener("keydown", (event) => {
+    const actionEl =
+      event.target && typeof event.target.closest === "function"
+        ? event.target.closest('[data-action="open-display-modal"]')
+        : null;
+    if (actionEl && (event.key === "Enter" || event.key === " ")) {
+      event.preventDefault();
+      openDisplayFocus(actionEl.dataset.id);
+      return;
+    }
+
+    if (app.view !== "display-view" || !getDisplayFocusContext().hasFocus) {
+      return;
+    }
+    if (shouldIgnoreDisplayHotkeyTarget(event.target)) {
+      return;
+    }
+
+    switch (event.key) {
+      case "Escape":
+        event.preventDefault();
+        closeDisplayFocus();
+        break;
+      case "ArrowLeft":
+        event.preventDefault();
+        stepDisplayFocus(-1);
+        break;
+      case "ArrowRight":
+        event.preventDefault();
+        stepDisplayFocus(1);
+        break;
+      default:
+        break;
+    }
+  });
+
   mainEl.addEventListener("submit", async (event) => {
     const form = event.target;
     if (!form.dataset.action) return;
@@ -1700,6 +2342,7 @@ function bindEvents() {
         app.data.config.teacherPinHash = await hashPin(pin);
         saveData();
         app.auth.teacher = true;
+        app.ui.authScreen = "login";
         sessionStorage.setItem("teacherAuthed", "1");
         setAuthError("");
         showToast("PIN 设置成功", "info");
@@ -1707,6 +2350,15 @@ function bindEvents() {
         break;
       }
       case "login-pin": {
+        const pinState = getTeacherPinState();
+        if (pinState === "corrupt") {
+          setAuthError("教师 PIN 配置已损坏，请先点击“重新设置 PIN”");
+          return;
+        }
+        if (pinState === "unset") {
+          setAuthError("请先设置教师 PIN");
+          return;
+        }
         const pin = form.pin.value.trim();
         if (!updateAuthError(form, { strict: true })) {
           return;
@@ -1717,13 +2369,60 @@ function bindEvents() {
           return;
         }
         app.auth.teacher = true;
+        app.ui.authScreen = "login";
         sessionStorage.setItem("teacherAuthed", "1");
         setAuthError("");
         showToast("欢迎进入教师模式", "info");
         setView("teacher-dashboard");
         break;
       }
+      case "recover-pin": {
+        const recoveryCode = form.recoveryCode.value.trim();
+        const newPin = form.newPin.value.trim();
+        const newPinConfirm = form.newPinConfirm.value.trim();
+        if (!recoveryCode) {
+          setAuthError("请输入恢复码");
+          return;
+        }
+        if (recoveryCode !== RECOVERY_CODE) {
+          setAuthError("恢复码不正确");
+          return;
+        }
+        if (!newPin) {
+          setAuthError("请输入新 PIN");
+          return;
+        }
+        if (!isValidPin(newPin)) {
+          setAuthError("PIN 只能包含字母和数字，长度为 4-8 位");
+          return;
+        }
+        if (!newPinConfirm) {
+          setAuthError("请确认新 PIN");
+          return;
+        }
+        if (!isValidPin(newPinConfirm)) {
+          setAuthError("PIN 只能包含字母和数字，长度为 4-8 位");
+          return;
+        }
+        if (newPin !== newPinConfirm) {
+          setAuthError("两次 PIN 不一致");
+          return;
+        }
+        app.data.config.teacherPinHash = await hashPin(newPin);
+        saveData();
+        app.auth.teacher = true;
+        app.ui.authScreen = "login";
+        sessionStorage.setItem("teacherAuthed", "1");
+        setAuthError("");
+        showToast("PIN 已重新设置", "info");
+        setView("teacher-dashboard");
+        break;
+      }
       case "change-pin": {
+        if (getTeacherPinState() === "corrupt") {
+          showToast("教师 PIN 配置已损坏，请退出后使用恢复码重新设置", "danger");
+          return;
+        }
         const currentPin = form.currentPin.value.trim();
         const newPin = form.newPin.value.trim();
         if (!isValidPin(newPin)) {
@@ -1754,6 +2453,7 @@ function bindEvents() {
         if (studentId) {
           const student = getStudentById(studentId);
           if (student) {
+            clearLastUndoBatch();
             const oldName = student.name;
             student.name = name;
             student.seatNo = seatNo;
@@ -1767,6 +2467,7 @@ function bindEvents() {
           app.ui.editingStudentId = null;
           showToast("学生信息已更新", "info");
         } else {
+          clearLastUndoBatch();
           const newStudent = {
             id: makeId("student"),
             name,
@@ -1781,6 +2482,17 @@ function bindEvents() {
         }
         saveData();
         form.reset();
+        render();
+        break;
+      }
+      case "bulk-award": {
+        const selectedIds = getBulkSelectedStudentIds();
+        const points = Number(form.bulkPoints.value);
+        const reason = form.bulkReasonCustom.value.trim() || form.bulkReasonTemplate.value || "加分";
+        const success = bulkAwardStudents(selectedIds, points, reason);
+        if (success) {
+          form.reset();
+        }
         render();
         break;
       }
@@ -1840,7 +2552,7 @@ function bindEvents() {
   mainEl.addEventListener("input", (event) => {
     if (app.view === "teacher-dashboard" && !app.auth.teacher) {
       const authForm = event.target.closest("form");
-      if (authForm && (authForm.dataset.action === "login-pin" || authForm.dataset.action === "set-pin")) {
+      if (authForm && (authForm.dataset.action === "login-pin" || authForm.dataset.action === "set-pin" || authForm.dataset.action === "recover-pin")) {
         const errorEl = document.getElementById("authError");
         if (errorEl && errorEl.classList.contains("show")) {
           setAuthError("");
@@ -1851,6 +2563,12 @@ function bindEvents() {
       app.ui.studentSearch = event.target.value;
       render();
     }
+    if (event.target.id === "bulkPointsDraft") {
+      app.ui.bulkPointsDraft = event.target.value;
+    }
+    if (event.target.id === "bulkReasonCustomDraft") {
+      app.ui.bulkReasonCustomDraft = event.target.value;
+    }
     if (event.target.id === "displaySearch") {
       if (event.isComposing || app.ui.displaySearchComposing) {
         app.ui.displaySearch = event.target.value;
@@ -1859,6 +2577,12 @@ function bindEvents() {
       app.ui.displaySearch = event.target.value;
       app.ui.displayPage = 0;
       preserveInputFocus("displaySearch", render);
+    }
+  });
+
+  mainEl.addEventListener("change", (event) => {
+    if (event.target.id === "bulkReasonTemplateDraft") {
+      app.ui.bulkReasonTemplateDraft = event.target.value;
     }
   });
 }
