@@ -1,9 +1,7 @@
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Fraunces:opsz,wght@9..144,600;700&display=swap');
-
 :root {
   color-scheme: light;
-  --font-sans: "Space Grotesk", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
-  --font-display: "Fraunces", "Space Grotesk", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", serif;
+  --font-sans: "Segoe UI", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+  --font-display: "Segoe UI", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
   --bg-1: #f4f7fb;
   --bg-2: #fff4e6;
   --ink-1: #0f172a;
@@ -101,18 +99,6 @@ body::after {
   margin-left: auto;
 }
 
-.teacher-mode #displayBtn {
-  display: none;
-}
-
-.teacher-mode #homeBtn {
-  display: none;
-}
-
-.teacher-students-mode .header-exit {
-  display: none;
-}
-
 .brand {
   display: flex;
   gap: 14px;
@@ -149,10 +135,6 @@ body::after {
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
-}
-
-.teacher-students-mode .header-actions {
-  display: none;
 }
 
 .main {
@@ -515,6 +497,12 @@ label {
   margin-top: 12px;
 }
 
+.field-hint {
+  margin: 8px 0 0;
+  color: var(--ink-2);
+  font-size: 0.95rem;
+}
+
 .table {
   width: 100%;
   border-collapse: collapse;
@@ -541,6 +529,19 @@ label {
 
 .table tr:hover td {
   background: #eef2f6;
+}
+
+.table-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.table-actions button.text {
+  min-width: auto;
+  height: auto;
+  padding: 0 6px;
 }
 
 .progress {
@@ -650,6 +651,34 @@ label {
   border: 1px solid #fed7aa;
 }
 
+.banner-section {
+  padding: 0;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.banner-card {
+  border-radius: var(--radius-lg);
+  padding: 20px 22px;
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  justify-content: space-between;
+  background: linear-gradient(135deg, rgba(15, 118, 110, 0.14), rgba(249, 115, 22, 0.12));
+  border: 1px solid rgba(15, 118, 110, 0.18);
+}
+
+.banner-card h2 {
+  margin: 10px 0 8px;
+}
+
+.banner-card p {
+  margin: 0;
+  color: var(--ink-2);
+}
+
 .pill-list {
   display: flex;
   gap: 8px;
@@ -675,6 +704,14 @@ label {
 
 .hero h2 {
   margin: 0;
+}
+
+.task-card {
+  align-content: start;
+}
+
+.task-card .form-actions {
+  margin-top: 0;
 }
 
 .mode-display body,
@@ -935,6 +972,11 @@ body.display-mode .mode-indicator {
 
   .landing-title {
     font-size: 1.9rem;
+  }
+
+  .banner-card {
+    flex-direction: column;
+    align-items: flex-start;
   }
 }
 

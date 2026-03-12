@@ -1,8 +1,17 @@
 ﻿
 const STORAGE_KEY = "class-pet-mvp";
+const SEAT_LABEL = "座号/学号";
+const PIN_RULE_LABEL = "4-8 位字母或数字";
+const PIN_HELP_TEXT = `${PIN_RULE_LABEL}，建议使用纯数字`;
+const BACKUP_REMINDER_INTERVAL = 7 * 24 * 60 * 60 * 1000;
+
+const QUICK_AWARD_PRESETS = {
+  1: "课堂表现",
+  2: "积极参与"
+};
 
 const DEFAULT_DATA = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   students: [],
   pets: [],
   ledger: [],
@@ -28,6 +37,7 @@ const DEFAULT_DATA = {
   ],
   config: {
     teacherPinHash: "",
+    lastBackupAt: null,
     rules: {
       xpPerLevel: 50,
       defaultHunger: 60,
@@ -92,9 +102,57 @@ function loadData() {
   }
 }
 
+function sanitizeAlias(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/\s+/g, "")
+    .replace(/[^a-z0-9]/g, "");
+}
+
+function generateAlias(name) {
+  const text = String(name || "").trim();
+  if (!text) return "";
+
+  try {
+    const pinyinApi = window.pinyinPro && typeof window.pinyinPro.pinyin === "function"
+      ? window.pinyinPro.pinyin
+      : null;
+    if (pinyinApi) {
+      const result = pinyinApi(text, { toneType: "none", type: "array" });
+      const joined = Array.isArray(result) ? result.join("") : result;
+      const alias = sanitizeAlias(joined);
+      if (alias) return alias;
+    }
+  } catch (err) {
+    console.warn("生成拼音失败，使用简化别名", err);
+  }
+
+  return sanitizeAlias(
+    text
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((part) => part[0] || "")
+      .join("")
+  );
+}
+
+function normalizeStudent(student) {
+  const normalizedStudent = {
+    points: 0,
+    group: "",
+    alias: "",
+    ...student
+  };
+  normalizedStudent.alias = sanitizeAlias(normalizedStudent.alias) || generateAlias(normalizedStudent.name);
+  return normalizedStudent;
+}
+
 function normalizeData(data) {
   const normalized = clone(DEFAULT_DATA);
-  normalized.schemaVersion = data.schemaVersion || DEFAULT_DATA.schemaVersion;
+  normalized.schemaVersion =
+    typeof data.schemaVersion === "number"
+      ? Math.max(data.schemaVersion, DEFAULT_DATA.schemaVersion)
+      : DEFAULT_DATA.schemaVersion;
   normalized.students = Array.isArray(data.students) ? data.students : [];
   normalized.pets = Array.isArray(data.pets) ? data.pets : [];
   normalized.ledger = Array.isArray(data.ledger) ? data.ledger : [];
@@ -111,12 +169,7 @@ function normalizeData(data) {
     ...((data.config || {}).rules || {})
   };
 
-  normalized.students = normalized.students.map((student) => ({
-    points: 0,
-    group: "",
-    alias: "",
-    ...student
-  }));
+  normalized.students = normalized.students.map(normalizeStudent);
 
   return normalized;
 }
@@ -181,6 +234,10 @@ function setAuthError(message = "") {
   errorEl.classList.toggle("show", Boolean(message));
 }
 
+function isValidPin(pin) {
+  return /^[a-zA-Z0-9]{4,8}$/.test(pin);
+}
+
 function getAuthErrorMessage(form, options = {}) {
   if (!form) return "";
   const strict = options.strict === true;
@@ -189,15 +246,13 @@ function getAuthErrorMessage(form, options = {}) {
   const isSetPin = form.dataset.action === "set-pin";
 
   if (strict && !pin) return "请输入 PIN";
-  if (pin && /[^a-zA-Z0-9]/.test(pin)) return "PIN 只能包含英文和数字";
-  if (pin.length > 0 && (pin.length < 4 || pin.length > 8)) return "PIN 长度需为 4-8 位";
+  if (pin && !isValidPin(pin)) return "PIN 只能包含字母和数字，长度为 4-8 位";
 
   if (isSetPin) {
     if (strict && !pinConfirm) return "请确认 PIN";
-    if (pinConfirm && /[^a-zA-Z0-9]/.test(pinConfirm)) return "PIN 只能包含英文和数字";
-    if (pinConfirm.length > 0 && (pinConfirm.length < 4 || pinConfirm.length > 8)) return "PIN 长度需为 4-8 位";
-    const pinReady = pin.length >= 4 && pin.length <= 8;
-    const confirmReady = pinConfirm.length >= 4 && pinConfirm.length <= 8;
+    if (pinConfirm && !isValidPin(pinConfirm)) return "PIN 只能包含字母和数字，长度为 4-8 位";
+    const pinReady = isValidPin(pin);
+    const confirmReady = isValidPin(pinConfirm);
     if (pinReady && confirmReady && pin !== pinConfirm) return "两次 PIN 不一致";
   }
 
@@ -342,6 +397,70 @@ function formatTime(timestamp) {
   return `${date.toLocaleDateString()} ${date.toLocaleTimeString()}`;
 }
 
+function getLastBackupText() {
+  return app.data.config.lastBackupAt ? formatTime(app.data.config.lastBackupAt) : "还没有备份";
+}
+
+function shouldShowBackupReminder() {
+  const lastBackupAt = Number(app.data.config.lastBackupAt || 0);
+  return !lastBackupAt || Date.now() - lastBackupAt >= BACKUP_REMINDER_INTERVAL;
+}
+
+function renderBackupReminder() {
+  if (!shouldShowBackupReminder()) return "";
+
+  return `
+    <section class="section banner-section">
+      <div class="banner-card">
+        <div>
+          <span class="badge">备份提醒</span>
+          <h2>当前数据保存在这台电脑的浏览器里</h2>
+          <p>建议定期导出一份备份文件。最近一次备份：${escapeHtml(getLastBackupText())}</p>
+        </div>
+        <div class="form-actions">
+          <button class="primary" data-action="export-data">立即备份</button>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderSetupChecklist() {
+  if (app.data.students.length > 0) return "";
+
+  return `
+    <section class="section">
+      <div class="section-header">
+        <h2>首次使用 3 步</h2>
+        <span class="pill">先完成一次班级初始化</span>
+      </div>
+      <div class="grid cols-3">
+        <div class="card task-card">
+          <span class="badge">第 1 步</span>
+          <h3>导入学生名单</h3>
+          <p>推荐先从 CSV 导入，省去逐个录入的时间。</p>
+          <button class="primary" data-action="go-import">去导入</button>
+        </div>
+        <div class="card task-card">
+          <span class="badge">第 2 步</span>
+          <h3>检查学生列表</h3>
+          <p>确认姓名、座号/学号、分组都正确。</p>
+          <button class="ghost" data-action="go-students">查看学生</button>
+        </div>
+        <div class="card task-card">
+          <span class="badge">第 3 步</span>
+          <h3>开始课堂使用</h3>
+          <p>可以先试着给一位学生加分，再进入展示模式。</p>
+          <div class="form-actions">
+            <button class="ghost" data-action="go-rewards">发放奖励</button>
+            <button class="ghost" data-action="go-display">展示模式</button>
+          </div>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
 function formatEffects(effects) {
   const parts = [];
   if (effects.hunger) {
@@ -396,6 +515,40 @@ function addLedgerEntry(entry) {
     operator: "teacher",
     ...entry
   });
+}
+
+function exportData(options = {}) {
+  const now = Date.now();
+  app.data.config.lastBackupAt = now;
+  saveData();
+
+  const payload = JSON.stringify(app.data, null, 2);
+  const blob = new Blob([payload], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const date = new Date(now);
+  const stamp = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}${String(
+    date.getDate()
+  ).padStart(2, "0")}`;
+  const suffix = options.tag ? `-${options.tag}` : "";
+  a.href = url;
+  a.download = `class-pet-backup-${stamp}${suffix}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+
+  if (!options.silent) {
+    showToast("已导出备份文件", "info");
+  }
+}
+
+function confirmWithAutoBackup(message, tag) {
+  if (!confirm(message)) {
+    return false;
+  }
+  exportData({ tag, silent: true });
+  return true;
 }
 
 async function hashPin(pin) {
@@ -469,7 +622,7 @@ function render() {
       mainEl.innerHTML = renderTeacherSettings();
       break;
     case "student-view":
-      setModeIndicator("学生展示");
+      setModeIndicator("查看宠物");
       mainEl.innerHTML = renderStudentView();
       break;
     case "display-view":
@@ -488,7 +641,7 @@ function render() {
 }
 
 function renderHome() {
-  const showDisplayEntry = !app.auth.teacher;
+  const teacherEntryText = app.auth.teacher ? "返回教师模式" : "教师登录";
   return `
     <section class="landing">
       <div class="landing-title-wrap">
@@ -498,8 +651,8 @@ function renderHome() {
       </div>
       <div class="landing-card">
         <div class="landing-actions">
-          <button class="primary" data-action="go-teacher">教师登录</button>
-          ${showDisplayEntry ? `<button class="accent" data-action="go-display">进入展示模式</button>` : ""}
+          <button class="primary" data-action="go-teacher">${teacherEntryText}</button>
+          <button class="accent" data-action="go-display">进入展示模式</button>
         </div>
       </div>
     </section>
@@ -514,20 +667,21 @@ function renderTeacherLogin() {
         <div class="landing-title-wrap">
           <img src="assets/pet.svg" alt="宠物图标" class="landing-icon" />
           <h1 class="landing-title">设置教师 PIN</h1>
-          <p class="landing-subtitle">首次使用请设置 PIN 以保护管理入口</p>
+          <p class="landing-subtitle">首次使用请先设置一个教师 PIN，用来保护管理入口</p>
         </div>
         <div class="landing-card">
           <form class="landing-form" data-action="set-pin">
             <div class="landing-field">
-              <label>设置 PIN（4-8 位英文或数字）</label>
-              <input type="password" name="pin" minlength="4" maxlength="8" required />
+              <label>设置 PIN（${PIN_RULE_LABEL}）</label>
+              <input type="password" name="pin" minlength="4" maxlength="8" autocomplete="new-password" required />
             </div>
             <div class="landing-field">
               <label>确认 PIN</label>
-              <input type="password" name="pinConfirm" minlength="4" maxlength="8" required />
+              <input type="password" name="pinConfirm" minlength="4" maxlength="8" autocomplete="new-password" required />
             </div>
             <button class="primary" type="submit">保存并进入教师模式</button>
           </form>
+          <p class="landing-hint">${PIN_HELP_TEXT}</p>
           <p id="authError" class="landing-error" role="alert"></p>
           <div class="landing-links">
             <button class="text-link" type="button" data-action="go-home">返回主页</button>
@@ -539,19 +693,20 @@ function renderTeacherLogin() {
 
   return `
     <section class="landing landing-auth">
-      <div class="landing-title-wrap">
-        <img src="assets/pet.svg" alt="宠物图标" class="landing-icon" />
-        <h1 class="landing-title">教师登录</h1>
-        <p class="landing-subtitle">请输入教师 PIN 进入管理模式</p>
-      </div>
+        <div class="landing-title-wrap">
+          <img src="assets/pet.svg" alt="宠物图标" class="landing-icon" />
+          <h1 class="landing-title">教师登录</h1>
+          <p class="landing-subtitle">请输入教师 PIN 进入教师模式</p>
+        </div>
       <div class="landing-card">
         <form class="landing-form" data-action="login-pin">
           <div class="landing-field">
-            <label>教师 PIN（4-8 位英文或数字）</label>
-            <input type="password" name="pin" minlength="4" maxlength="8" required />
+            <label>教师 PIN（${PIN_RULE_LABEL}）</label>
+            <input type="password" name="pin" minlength="4" maxlength="8" autocomplete="current-password" required />
           </div>
           <button class="primary" type="submit">进入教师模式</button>
         </form>
+        <p class="landing-hint">${PIN_HELP_TEXT}</p>
         <p id="authError" class="landing-error" role="alert"></p>
         <div class="landing-links">
           <button class="text-link" type="button" data-action="go-home">返回主页</button>
@@ -564,6 +719,8 @@ function renderTeacherLogin() {
 function renderTeacherDashboard() {
   const recentLedger = app.data.ledger.slice().sort((a, b) => b.timestamp - a.timestamp).slice(0, 8);
   return `
+    ${renderBackupReminder()}
+    ${renderSetupChecklist()}
     <section class="section">
       <h2>教师仪表盘</h2>
       <div class="grid cols-3">
@@ -585,6 +742,7 @@ function renderTeacherDashboard() {
       <div class="form-actions">
         <button class="primary" data-action="go-students">学生管理</button>
         <button class="primary" data-action="go-rewards">发放奖励</button>
+        <button class="ghost" data-action="go-display">展示模式</button>
         <button class="ghost" data-action="go-import">导入导出</button>
         <button class="ghost" data-action="go-settings">系统设置</button>
       </div>
@@ -611,18 +769,15 @@ function renderTeacherStudents() {
             <input name="name" required value="${editing ? escapeHtml(editing.name) : ""}" />
           </div>
           <div>
-            <label>学号</label>
+            <label>${SEAT_LABEL}</label>
             <input name="seatNo" required value="${editing ? escapeHtml(editing.seatNo) : ""}" />
           </div>
           <div>
             <label>分组（可选）</label>
             <input name="group" value="${editing ? escapeHtml(editing.group || "") : ""}" />
           </div>
-          <div>
-            <label>拼音/英文名（可选）</label>
-            <input name="alias" value="${editing ? escapeHtml(editing.alias || "") : ""}" />
-          </div>
         </div>
+        <p class="field-hint">拼音搜索会自动生成，无需手动填写拼音或英文名。</p>
         <div class="form-actions">
           <button class="primary" type="submit">${editing ? "保存修改" : "添加学生"}</button>
           ${editing ? `<button class="ghost" type="button" data-action="cancel-edit">取消编辑</button>` : ""}
@@ -634,7 +789,7 @@ function renderTeacherStudents() {
       <div class="form-row">
         <div>
           <label>搜索/过滤</label>
-          <input id="studentSearch" placeholder="姓名 / 拼音 / 学号 / 分组" value="${escapeHtml(app.ui.studentSearch)}" />
+          <input id="studentSearch" placeholder="姓名 / 拼音 / ${SEAT_LABEL} / 分组" value="${escapeHtml(app.ui.studentSearch)}" />
         </div>
       </div>
       <div class="section-header">
@@ -645,10 +800,9 @@ function renderTeacherStudents() {
         <table class="table">
           <thead>
             <tr>
-              <th>学号</th>
+              <th>${SEAT_LABEL}</th>
               <th>姓名</th>
               <th>分组</th>
-              <th>拼音</th>
               <th>积分</th>
               <th>操作</th>
             </tr>
@@ -661,12 +815,15 @@ function renderTeacherStudents() {
                 <td>${escapeHtml(student.seatNo)}</td>
                 <td>${escapeHtml(student.name)}</td>
                 <td>${escapeHtml(student.group || "-")}</td>
-                <td>${escapeHtml(student.alias || "-")}</td>
                 <td>${student.points || 0}</td>
                 <td>
-                  <button class="text" data-action="view-student" data-id="${student.id}">详情</button>
-                  <button class="text" data-action="edit-student" data-id="${student.id}">编辑</button>
-                  <button class="text" data-action="delete-student" data-id="${student.id}">删除</button>
+                  <div class="table-actions">
+                    <button class="ghost small" data-action="quick-student-award" data-id="${student.id}" data-points="1">+1</button>
+                    <button class="ghost small" data-action="quick-student-award" data-id="${student.id}" data-points="2">+2</button>
+                    <button class="text" data-action="view-student" data-id="${student.id}">详情</button>
+                    <button class="text" data-action="edit-student" data-id="${student.id}">编辑</button>
+                    <button class="text" data-action="delete-student" data-id="${student.id}">删除</button>
+                  </div>
                 </td>
               </tr>
             `
@@ -694,7 +851,7 @@ function renderTeacherRewards() {
                 ${students
                   .map(
                     (student) => `
-                  <option value="${student.id}">学号 ${escapeHtml(student.seatNo)} ${escapeHtml(student.name)}</option>
+                  <option value="${student.id}">${SEAT_LABEL} ${escapeHtml(student.seatNo)} ${escapeHtml(student.name)}</option>
                 `
                   )
                   .join("")}
@@ -763,7 +920,7 @@ function renderTeacherStudentDetail() {
         </div>
         <div class="stat-grid">
           <div class="stat-row">
-            <span class="stat-label">姓名：${escapeHtml(student.name)}（学号 ${escapeHtml(student.seatNo)}）</span>
+            <span class="stat-label">姓名：${escapeHtml(student.name)}（${SEAT_LABEL} ${escapeHtml(student.seatNo)}）</span>
             <span class="pill">积分余额：${student.points || 0}</span>
           </div>
           <div class="stat-row">
@@ -812,19 +969,23 @@ function renderTeacherStudentDetail() {
 
 function renderTeacherImport() {
   return `
+    ${renderBackupReminder()}
     <section class="section">
-      <h2>导出数据</h2>
-      <p>导出包含学生、宠物、积分、流水与配置的 JSON。</p>
-      <button class="primary" data-action="export-data">导出 JSON</button>
+      <h2>导出备份</h2>
+      <p>备份文件会保存学生、宠物、积分、流水和系统设置。</p>
+      <div class="pill-list">
+        <span class="pill">最近一次备份：${escapeHtml(getLastBackupText())}</span>
+      </div>
+      <button class="primary" data-action="export-data">立即备份</button>
     </section>
 
     <section class="section">
       <h2>导入数据</h2>
-      <p class="notice">导入会覆盖当前数据，操作前请确认已备份。</p>
+      <p class="notice">导入会覆盖当前数据。确认后，系统会先自动下载一份当前备份文件，再继续导入。</p>
       <form data-action="import-data">
         <div class="form-row">
           <div>
-            <label>选择 JSON 文件</label>
+            <label>选择备份 JSON 文件</label>
             <input type="file" name="importFile" accept="application/json" required />
           </div>
         </div>
@@ -837,10 +998,10 @@ function renderTeacherImport() {
 
     <section class="section">
       <h2>导入学生名单（CSV）</h2>
-      <p class="notice">支持格式：学号,姓名,分组,拼音（或 studentNo,name,group,alias）。导入会覆盖现有学生、宠物与流水。</p>
+      <p class="notice">支持格式：${SEAT_LABEL},姓名,分组。第 4 列拼音/英文名可留空；确认后，系统会先自动下载一份当前备份文件，再继续导入。</p>
       <div class="pill-list">
-        <span class="pill">示例：1,王晨曦,A,wangchenxi</span>
-        <span class="pill">示例：2,李一凡,,liyifan</span>
+        <span class="pill">示例：1,王晨曦,A</span>
+        <span class="pill">示例：2,李一凡,</span>
       </div>
       <form data-action="import-students-csv">
         <div class="form-row">
@@ -860,19 +1021,21 @@ function renderTeacherImport() {
 
 function renderTeacherSettings() {
   return `
+    ${renderBackupReminder()}
     <section class="section">
       <h2>修改教师 PIN</h2>
       <form data-action="change-pin">
         <div class="form-row">
           <div>
             <label>当前 PIN</label>
-            <input type="password" name="currentPin" required />
+            <input type="password" name="currentPin" autocomplete="current-password" required />
           </div>
           <div>
-            <label>新 PIN（4-8 位数字）</label>
-            <input type="password" name="newPin" minlength="4" maxlength="8" required />
+            <label>新 PIN（${PIN_RULE_LABEL}）</label>
+            <input type="password" name="newPin" minlength="4" maxlength="8" autocomplete="new-password" required />
           </div>
         </div>
+        <p class="field-hint">${PIN_HELP_TEXT}</p>
         <div class="form-actions">
           <button class="primary" type="submit">更新 PIN</button>
           <button class="ghost" type="button" data-action="go-dashboard">返回仪表盘</button>
@@ -883,14 +1046,15 @@ function renderTeacherSettings() {
     <section class="section">
       <h2>系统信息</h2>
       <div class="pill-list">
-        <span class="pill">Schema v${app.data.schemaVersion}</span>
+        <span class="pill">数据版本 v${app.data.schemaVersion}</span>
         <span class="pill">升级阈值：每 ${app.data.config.rules.xpPerLevel} XP 提升 1 级</span>
+        <span class="pill">最近一次备份：${escapeHtml(getLastBackupText())}</span>
       </div>
     </section>
 
     <section class="section">
       <h2>危险操作</h2>
-      <p class="notice">清空会删除所有本地数据，请谨慎使用。</p>
+      <p class="notice">清空会删除当前浏览器里的所有数据。确认后，系统会先自动下载一份备份文件。</p>
       <button class="ghost" data-action="reset-data">清空所有数据</button>
     </section>
   `;
@@ -914,7 +1078,7 @@ function renderStudentView() {
             </div>
             <div class="stat-grid">
               <div class="stat-row">
-                <span class="stat-label">${escapeHtml(selectedStudent.name)}（学号 ${escapeHtml(
+                <span class="stat-label">${escapeHtml(selectedStudent.name)}（${SEAT_LABEL} ${escapeHtml(
                   selectedStudent.seatNo
                 )}）</span>
                 <span class="pill">积分余额：${selectedStudent.points || 0}</span>
@@ -943,8 +1107,8 @@ function renderStudentView() {
 
   return `
     <section class="section">
-      <h2>我的宠物</h2>
-      <p class="notice">仅教师可进行喂养与积分操作。</p>
+      <h2>查看宠物</h2>
+      <p class="notice">这里只能查看宠物状态；加分和喂养仍由老师操作。</p>
       ${students.length ? `
         <div class="grid cols-3">
           ${students
@@ -952,7 +1116,7 @@ function renderStudentView() {
               (student) => `
             <div class="card">
               <h3>${escapeHtml(student.name)}</h3>
-              <p>学号：${escapeHtml(student.seatNo)}${student.group ? ` · 分组 ${escapeHtml(student.group)}` : ""}</p>
+              <p>${SEAT_LABEL}：${escapeHtml(student.seatNo)}${student.group ? ` · 分组 ${escapeHtml(student.group)}` : ""}</p>
               <button class="ghost" data-action="select-student" data-id="${student.id}">选择</button>
             </div>
           `
@@ -985,7 +1149,7 @@ function renderDisplayView() {
             </div>
             <div class="stat-grid">
               <div class="stat-row">
-                <span class="stat-label">${escapeHtml(selectedStudent.name)}（学号 ${escapeHtml(
+                <span class="stat-label">${escapeHtml(selectedStudent.name)}（${SEAT_LABEL} ${escapeHtml(
                   selectedStudent.seatNo
                 )}）</span>
                 <span class="pill">积分余额：${selectedStudent.points || 0}</span>
@@ -1031,7 +1195,7 @@ function renderDisplayView() {
           <div class="badge">展示模式 · 搜索结果</div>
           <div class="display-search">
             <span class="search-label">搜索</span>
-            <input id="displaySearch" placeholder="姓名 / 拼音 / 英文 / 学号" value="${escapeHtml(searchTerm)}" />
+            <input id="displaySearch" placeholder="姓名 / 拼音 / ${SEAT_LABEL}" value="${escapeHtml(searchTerm)}" />
             <button class="ghost small" data-action="clear-display-search">清除</button>
           </div>
           <div class="pill">共 0 名</div>
@@ -1063,7 +1227,7 @@ function renderDisplayView() {
         <div class="badge">展示模式 · 第 ${page + 1} / ${totalPages} 页</div>
         <div class="display-search">
           <span class="search-label">搜索</span>
-          <input id="displaySearch" placeholder="姓名 / 拼音 / 英文 / 学号" value="${escapeHtml(searchTerm)}" />
+          <input id="displaySearch" placeholder="姓名 / 拼音 / ${SEAT_LABEL}" value="${escapeHtml(searchTerm)}" />
           <button class="ghost small" data-action="clear-display-search">清除</button>
         </div>
         <div class="pill">共 ${students.length} 名${searchTerm ? "（已筛选）" : ""}</div>
@@ -1076,7 +1240,7 @@ function renderDisplayView() {
             <div class="display-card compact">
               <div class="display-title">
                 <h3>${escapeHtml(student.name)}</h3>
-                <span class="pill">学号 ${escapeHtml(student.seatNo)}</span>
+                <span class="pill">${SEAT_LABEL} ${escapeHtml(student.seatNo)}</span>
               </div>
               <div class="display-meta">
                 <span class="pill">宠物 ${escapeHtml(getPetTypeName(pet))}</span>
@@ -1129,7 +1293,7 @@ function renderLedgerTable(entries) {
         ${entries
           .map((entry) => {
             const student = getStudentById(entry.studentId);
-            const studentName = student ? `${student.name} (学号 ${student.seatNo})` : "-";
+            const studentName = student ? `${student.name} (${SEAT_LABEL} ${student.seatNo})` : "-";
             const delta = entry.deltaPoints
               ? `${entry.deltaPoints > 0 ? "+" : ""}${entry.deltaPoints}分`
               : "";
@@ -1210,24 +1374,6 @@ function feedStudent(studentId, catalogId) {
   showToast(leveledUp ? "喂养成功，宠物升级！" : "喂养成功", "info");
 }
 
-function exportData() {
-  const payload = JSON.stringify(app.data, null, 2);
-  const blob = new Blob([payload], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  const date = new Date();
-  const stamp = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}${String(
-    date.getDate()
-  ).padStart(2, "0")}`;
-  a.href = url;
-  a.download = `class-pet-backup-${stamp}.json`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-  showToast("已导出 JSON 文件", "info");
-}
-
 function validateImport(data) {
   const errors = [];
   if (!data || typeof data !== "object") {
@@ -1252,7 +1398,7 @@ function importData(file) {
         showToast(`导入失败：${errors.join("；")}`, "danger");
         return;
       }
-      if (!confirm("导入会覆盖当前数据，是否继续？")) {
+      if (!confirmWithAutoBackup("导入会覆盖当前数据。系统会先自动下载一份备份文件，再继续导入。是否继续？", "pre-import")) {
         return;
       }
       app.data = normalizeData(parsed);
@@ -1300,7 +1446,7 @@ function parseStudentCsv(text) {
         cell.includes("alias") ||
         cell === "py"
     ) ||
-    /学号|姓名|分组|拼音|英文/.test(headerLine);
+    /座号|学号|姓名|分组|拼音|英文/.test(headerLine);
   if (hasHeader) {
     startIndex = 1;
   }
@@ -1313,7 +1459,7 @@ function parseStudentCsv(text) {
     const group = parts[2] || "";
     const alias = parts[3] || "";
     if (!studentNo || !name) {
-      errors.push(`第 ${i + 1} 行缺少学号或姓名`);
+      errors.push(`第 ${i + 1} 行缺少${SEAT_LABEL}或姓名`);
       continue;
     }
     students.push({
@@ -1321,7 +1467,7 @@ function parseStudentCsv(text) {
       seatNo: studentNo,
       name,
       group,
-      alias,
+      alias: sanitizeAlias(alias) || generateAlias(name),
       points: 0
     });
   }
@@ -1342,7 +1488,12 @@ function importStudentsCsv(file) {
       showToast(`导入失败：${errors.slice(0, 2).join("；")}`, "danger");
       return;
     }
-    if (!confirm("导入学生名单会覆盖现有学生、宠物与流水，是否继续？")) {
+    if (
+      !confirmWithAutoBackup(
+        "导入学生名单会覆盖现有学生、宠物与流水。系统会先自动下载一份备份文件，再继续导入。是否继续？",
+        "pre-csv-import"
+      )
+    ) {
       return;
     }
     app.data.students = students;
@@ -1412,6 +1563,14 @@ function bindEvents() {
       case "logout-teacher":
         logoutTeacher();
         break;
+      case "quick-student-award": {
+        const studentId = actionEl.dataset.id;
+        const delta = Number(actionEl.dataset.points || 0);
+        const reason = QUICK_AWARD_PRESETS[delta] || "课堂表现";
+        awardPoints(studentId, delta, reason);
+        render();
+        break;
+      }
       case "edit-student":
         app.ui.editingStudentId = actionEl.dataset.id;
         setView("teacher-students");
@@ -1420,15 +1579,20 @@ function bindEvents() {
         app.ui.editingStudentId = null;
         render();
         break;
-      case "delete-student":
-        if (!confirm("确认删除该学生及其宠物档案？")) return;
-        app.data.students = app.data.students.filter((student) => student.id !== actionEl.dataset.id);
+      case "delete-student": {
+        const student = getStudentById(actionEl.dataset.id);
+        const studentLabel = student
+          ? `${student.name}（${SEAT_LABEL} ${student.seatNo}）`
+          : "该学生";
+        if (!confirm(`确认删除 ${studentLabel} 及其宠物档案吗？`)) return;
+        app.data.students = app.data.students.filter((item) => item.id !== actionEl.dataset.id);
         app.data.pets = app.data.pets.filter((pet) => pet.studentId !== actionEl.dataset.id);
         app.data.ledger = app.data.ledger.filter((entry) => entry.studentId !== actionEl.dataset.id);
         saveData();
         render();
         showToast("已删除学生", "warning");
         break;
+      }
       case "view-student":
         setView("teacher-student-detail", { id: actionEl.dataset.id });
         break;
@@ -1467,9 +1631,17 @@ function bindEvents() {
         break;
       case "export-data":
         exportData();
+        render();
         break;
       case "reset-data":
-        if (!confirm("确认清空所有数据？此操作不可撤销。")) return;
+        if (
+          !confirmWithAutoBackup(
+            "确认清空当前浏览器里的所有数据吗？系统会先自动下载一份备份文件，此操作不可撤销。",
+            "pre-reset"
+          )
+        ) {
+          return;
+        }
         app.data = clone(DEFAULT_DATA);
         app.ui = {
           ...app.ui,
@@ -1554,8 +1726,8 @@ function bindEvents() {
       case "change-pin": {
         const currentPin = form.currentPin.value.trim();
         const newPin = form.newPin.value.trim();
-        if (!/^\d{4,8}$/.test(newPin)) {
-          showToast("新 PIN 必须是 4-8 位数字", "warning");
+        if (!isValidPin(newPin)) {
+          showToast(`新 PIN 需为 ${PIN_RULE_LABEL}`, "warning");
           return;
         }
         const currentHash = await hashPin(currentPin);
@@ -1573,9 +1745,9 @@ function bindEvents() {
         const name = form.name.value.trim();
         const seatNo = form.seatNo.value.trim();
         const group = form.group.value.trim();
-        const alias = form.alias ? form.alias.value.trim() : "";
+        const alias = generateAlias(name);
         if (!name || !seatNo) {
-          showToast("姓名和学号必填", "warning");
+          showToast(`姓名和${SEAT_LABEL}必填`, "warning");
           return;
         }
         const studentId = form.studentId ? form.studentId.value : null;
