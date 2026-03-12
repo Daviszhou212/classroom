@@ -4,16 +4,18 @@
 - 项目名称：班级电子宠物管理系统（离线 MVP）。
 - 运行形态：纯前端静态页面，无后端服务、无构建步骤。
 - 核心模式：
-  - 教师模式：学生管理、加分、喂养、导入导出、系统设置。
+  - 教师模式：学生管理、加分、教师代喂、班会喂养入口、导入导出、系统设置。
   - 学生展示：仅查看宠物与积分。
-  - 展示模式：分页展示学生宠物，支持搜索与翻页。
+  - 班会喂养模式：老师开启后，学生轮流自选自己；首次有效喂养前可使用 1 次重新领养机会，之后可连续喂养或跳过。
+  - 展示模式：分页展示学生宠物，支持搜索与翻页，只读。
 - 数据机制：
   - 业务数据存储在浏览器 `LocalStorage`（键名：`class-pet-mvp`）。
   - 支持导出/导入 JSON 备份。
   - 支持导入 CSV 学生名单（示例见 `data-samples/students.csv`）。
 - 业务约束：
   - 不启用扣分功能（仅加分）。
-  - 喂养由教师代操作。
+  - 展示模式只读，不允许喂养或积分变更。
+  - 班会喂养会话需由老师手动结束。
 
 ## 2. 技术栈与运行依赖
 - 技术栈：
@@ -53,13 +55,14 @@
   - 在 `README.md`、`index.html`、`scripts/app.js`、`styles/main.css` 未发现环境变量读取逻辑（如 `process.env`、`import.meta.env`）。
 - 代码内置配置（`scripts/app.js`）：
   - `STORAGE_KEY = "class-pet-mvp"`：本地存储键。
-  - `DEFAULT_DATA.schemaVersion = 1`：数据结构版本。
+  - `DEFAULT_DATA.schemaVersion = 4`：数据结构版本。
   - `DEFAULT_DATA.config.rules`：
     - `xpPerLevel: 50`
     - `defaultHunger: 60`
     - `defaultMood: 60`
   - `DEFAULT_DATA.config.teacherPinHash`：教师 PIN 哈希存储位。
   - `app.ui.displayPageSize = 16`：展示模式默认分页大小。
+  - `app.ui.supervisedFeedSessionActive / supervisedFeedStudentId / supervisedFeedVisitedStudentIds / supervisedFeedReAdoptDraftTypeId`：班会喂养会话与重新领养草稿状态。
 - 维护建议：
   - 调整默认配置前先执行 JSON 导出备份，避免历史数据与新默认值混淆。
 
@@ -70,12 +73,14 @@
   3. 首次无 PIN 时进入设置 PIN 流程；后续使用 PIN 登录。
 - 学生与宠物维护流程：
   1. 教师在“学生管理”新增/编辑学生（`save-student`）。
-  2. 新增学生时自动创建宠物档案；`syncData()` 保证学生与宠物一一对应。
+  2. 新增学生时自动随机创建宠物档案，并默认附带 1 次重新领养机会；`syncData()` 保证学生与宠物一一对应，并补齐旧数据字段。
   3. 删除学生时同步清理该学生的宠物与流水记录。
 - 积分与喂养流程：
   1. 奖励通过 `award-points` 增加积分并写入流水（`ledger`）。
   2. 喂养通过 `feed` 扣积分、改饥饿/心情/XP，并按规则更新等级。
   3. 全流程落地到 `ledger` 便于追溯。
+  4. 班会喂养通过 `supervised-feed-view` 组织学生轮流自选自己；学生在首次有效喂养前可执行 1 次 `re_adopt` 更换宠物类型，不影响等级、XP、饥饿值、心情值与积分。
+  5. 一旦学生完成首次有效喂养，重新领养资格立即失效；结束会话后清空运行时状态。
 - 数据备份/恢复流程：
   1. 在“导入导出”执行“导出 JSON”（文件名形如 `class-pet-backup-YYYYMMDD.json`）。
   2. 执行“导入数据”时先校验 `schemaVersion/students/pets/ledger/config`。
@@ -100,7 +105,7 @@
   2. 若涉及数据结构，先“导出 JSON”做基线备份。
 - 实施与验证：
   1. 修改后至少用两种启动方式之一验证页面可用（直接打开或本地静态服务器）。
-  2. 逐项回归：教师登录、学生管理、加分、喂养、展示模式分页/搜索、JSON 导入导出、CSV 导入。
+  2. 逐项回归：教师登录、学生管理、加分、教师代喂、班会喂养、展示模式分页/搜索、JSON 导入导出、CSV 导入。
   3. 观察浏览器控制台是否出现脚本错误。
 - 发布方式（当前仓库可验证范围内）：
   - 项目无构建产物与发布脚本，发布单元即静态文件本身（`index.html`、`styles/`、`scripts/`、`assets/`、`data-samples/`）。
@@ -109,7 +114,8 @@
 - [ ] `index.html` 能正确加载 `styles/main.css` 与 `scripts/app.js`。
 - [ ] 教师模式可登录/退出，PIN 设置与修改流程可用。
 - [ ] 学生新增、编辑、删除后，宠物档案与流水状态一致。
-- [ ] 展示模式分页、搜索、详情弹层可正常操作。
+- [ ] 班会喂养模式可进入、返回名单、一次重新领养、连续喂养、手动结束会话。
+- [ ] 展示模式分页、搜索、详情弹层可正常操作，且保持只读。
 - [ ] JSON 导出文件可生成，JSON 导入校验通过并可恢复数据。
 - [ ] CSV 导入按模板可成功，且会按预期覆盖 `students/pets/ledger`。
 - [ ] 危险操作“清空所有数据”有二次确认并按预期执行。
@@ -117,19 +123,21 @@
 
 ## 9. 维护检查清单（日/周/月）
 ### 日常（每个使用日）
-- [ ] 打开主页、教师模式、展示模式，确认页面可进入。
+- [ ] 打开主页、教师模式、班会喂养模式、展示模式，确认页面可进入。
 - [ ] 新增 1 名学生并删除，确认宠物档案同步创建/删除。
-- [ ] 执行一次加分与一次喂养，确认 `ledger` 有记录。
+- [ ] 执行一次加分、一次教师代喂、一次班会喂养，确认 `ledger` 有记录。
+- [ ] 抽查 1 名未喂养学生，确认其可在班会喂养中重新领养 1 次；完成后资格立即失效。
 - [ ] 结束前导出一次 JSON 备份。
 
 ### 每周
 - [ ] 使用 `data-samples/students.csv` 做一次完整导入演练。
+- [ ] 验证班会喂养模式的名单选择、一次重新领养、返回名单与手动结束会话。
 - [ ] 验证展示模式搜索（姓名、学号、`alias`）与翻页。
 - [ ] 抽查 3 名学生详情页：等级、XP、饥饿、心情显示正常。
 - [ ] 检查“系统设置”中的 Schema 与升级阈值显示是否正确。
 
 ### 每月
-- [ ] 在至少两种浏览器内执行一次完整回归（导入、管理、展示、导出）。
+- [ ] 在至少两种浏览器内执行一次完整回归（导入、管理、班会喂养、展示、导出）。
 - [ ] 评估 `styles/main.css` 外链字体对离线环境的一致性影响。
 - [ ] 审核是否发生 `schemaVersion` 或默认规则变更，并更新本文件。
 - [ ] 清理历史备份文件，保留至少一份可恢复的最近稳定 JSON。
@@ -139,6 +147,8 @@
   - `studentNo,name,group,alias`
 - 关键数据结构（`scripts/app.js`）：
   - 顶层：`schemaVersion`、`students`、`pets`、`ledger`、`catalog`、`config`
+  - `pets[*]`：包含 `petType`、`reAdoptAvailable`、`reAdoptedAt`
+  - `ledger[*].type`：包含 `award`、`feed`、`re_adopt` 等业务动作
   - 配置：`config.teacherPinHash`、`config.rules.xpPerLevel/defaultHunger/defaultMood`
 - 关键存储位：
   - `LocalStorage`: `class-pet-mvp`

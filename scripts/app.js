@@ -14,7 +14,7 @@ const QUICK_AWARD_PRESETS = {
 };
 
 const DEFAULT_DATA = {
-  schemaVersion: 3,
+  schemaVersion: 4,
   students: [],
   pets: [],
   ledger: [],
@@ -84,7 +84,11 @@ const app = {
     displaySelectedId: null,
     displayMotion: "",
     displayFreeze: false,
-    displaySearchComposing: false
+    displaySearchComposing: false,
+    supervisedFeedSessionActive: false,
+    supervisedFeedStudentId: null,
+    supervisedFeedVisitedStudentIds: [],
+    supervisedFeedReAdoptDraftTypeId: null
   }
 };
 
@@ -204,6 +208,16 @@ function normalizeData(data) {
     ...entry,
     batchId: typeof entry.batchId === "string" ? entry.batchId : undefined
   }));
+  const feedHistoryStudentIds = new Set(
+    normalized.ledger.filter((entry) => entry.type === "feed" && entry.studentId).map((entry) => entry.studentId)
+  );
+  normalized.pets = normalized.pets.map((pet) => {
+    const normalizedPet = { ...pet };
+    ensurePetReAdoptState(normalizedPet, {
+      hasFeedHistory: feedHistoryStudentIds.has(normalizedPet.studentId)
+    });
+    return normalizedPet;
+  });
 
   return normalized;
 }
@@ -221,7 +235,13 @@ function syncData() {
       app.data.pets.push(createPetForStudent(student));
     }
   }
-  app.data.pets.forEach(ensurePetType);
+  const feedHistoryStudentIds = new Set(
+    app.data.ledger.filter((entry) => entry.type === "feed" && entry.studentId).map((entry) => entry.studentId)
+  );
+  app.data.pets.forEach((pet) => {
+    ensurePetType(pet);
+    ensurePetReAdoptState(pet, { hasFeedHistory: feedHistoryStudentIds.has(pet.studentId) });
+  });
   app.ui.bulkSelectedStudentIds = app.ui.bulkSelectedStudentIds.filter((id) => studentIds.has(id));
   saveData();
 }
@@ -237,6 +257,8 @@ function createPetForStudent(student) {
     xp: 0,
     hunger: app.data.config.rules.defaultHunger,
     mood: app.data.config.rules.defaultMood,
+    reAdoptAvailable: true,
+    reAdoptedAt: null,
     updatedAt: now
   };
 }
@@ -302,11 +324,15 @@ function updateAuthError(form, options = {}) {
 
 function setView(view, params = {}) {
   const leavingDisplay = app.view === "display-view" && view !== "display-view";
+  const leavingSupervisedFeed = app.view === "supervised-feed-view" && view !== "supervised-feed-view";
   if (leavingDisplay) {
     app.ui.displaySearch = "";
     app.ui.displayPage = 0;
     app.ui.displaySelectedId = null;
     app.ui.displayFreeze = false;
+  }
+  if (leavingSupervisedFeed) {
+    resetSupervisedFeedSession();
   }
   app.view = view;
   app.params = params;
@@ -362,12 +388,67 @@ function ensurePetType(pet) {
   }
 }
 
+function hasStudentFeedHistory(studentId) {
+  return app.data.ledger.some((entry) => entry.studentId === studentId && entry.type === "feed");
+}
+
+function ensurePetReAdoptState(pet, options = {}) {
+  const hasFeedHistory = options.hasFeedHistory === true;
+  const reAdoptedAt = typeof pet.reAdoptedAt === "number" ? pet.reAdoptedAt : null;
+  const storedAvailability =
+    typeof pet.reAdoptAvailable === "boolean"
+      ? pet.reAdoptAvailable
+      : !reAdoptedAt;
+
+  pet.reAdoptedAt = reAdoptedAt;
+  pet.reAdoptAvailable = !reAdoptedAt && !hasFeedHistory && storedAvailability;
+}
+
 function getPetIcon(pet) {
   return getPetType(pet.petType).icon;
 }
 
 function getPetTypeName(pet) {
   return getPetType(pet.petType).name;
+}
+
+function getPetReAdoptStatus(studentId, pet) {
+  if (!pet) {
+    return {
+      available: false,
+      message: "未找到宠物档案。"
+    };
+  }
+
+  if (pet.reAdoptedAt) {
+    return {
+      available: false,
+      message: "重新领养机会已使用，之后只能继续照顾当前宠物。"
+    };
+  }
+
+  if (hasStudentFeedHistory(studentId)) {
+    return {
+      available: false,
+      message: "首次喂养后不可重新领养，请继续照顾当前宠物。"
+    };
+  }
+
+  if (pet.reAdoptAvailable === false) {
+    return {
+      available: false,
+      message: "重新领养机会已使用，之后只能继续照顾当前宠物。"
+    };
+  }
+
+  return {
+    available: true,
+    message: "你还有 1 次重新领养机会。更换后不会影响等级、经验、饥饿值、心情值和积分。"
+  };
+}
+
+function isPetEligibleForReAdopt(studentId, pet) {
+  return getPetReAdoptStatus(studentId, pet).available;
 }
 
 function getSortedStudents(options = {}) {
@@ -488,6 +569,83 @@ function getDisplayFocusContext() {
   };
 }
 
+function getSupervisedFeedVisitedStudentIds() {
+  const studentIds = new Set(app.data.students.map((student) => student.id));
+  return app.ui.supervisedFeedVisitedStudentIds.filter(
+    (id, index, list) => studentIds.has(id) && list.indexOf(id) === index
+  );
+}
+
+function resetSupervisedFeedSession() {
+  app.ui.supervisedFeedSessionActive = false;
+  app.ui.supervisedFeedStudentId = null;
+  app.ui.supervisedFeedVisitedStudentIds = [];
+  app.ui.supervisedFeedReAdoptDraftTypeId = null;
+}
+
+function startSupervisedFeedSession() {
+  app.ui.supervisedFeedSessionActive = true;
+  app.ui.supervisedFeedStudentId = null;
+  app.ui.supervisedFeedVisitedStudentIds = [];
+  app.ui.supervisedFeedReAdoptDraftTypeId = null;
+}
+
+function markSupervisedFeedVisited(studentId) {
+  if (!studentId) return;
+  const visitedIds = getSupervisedFeedVisitedStudentIds();
+  if (visitedIds.includes(studentId)) {
+    app.ui.supervisedFeedVisitedStudentIds = visitedIds;
+    return;
+  }
+  app.ui.supervisedFeedVisitedStudentIds = [...visitedIds, studentId];
+}
+
+function selectSupervisedFeedStudent(studentId) {
+  const student = getStudentById(studentId);
+  const pet = getPetByStudentId(studentId);
+  if (!app.ui.supervisedFeedSessionActive || !student || !pet) {
+    showToast("请先选择有效的学生", "warning");
+    return;
+  }
+  markSupervisedFeedVisited(studentId);
+  app.ui.supervisedFeedStudentId = studentId;
+  app.ui.supervisedFeedReAdoptDraftTypeId = null;
+  render();
+}
+
+function leaveSupervisedFeedStudent() {
+  app.ui.supervisedFeedStudentId = null;
+  app.ui.supervisedFeedReAdoptDraftTypeId = null;
+  render();
+}
+
+function selectSupervisedFeedReAdoptType(typeId) {
+  if (!app.auth.teacher || !app.ui.supervisedFeedSessionActive || !app.ui.supervisedFeedStudentId) {
+    showToast("请先由老师开启班会喂养会话", "warning");
+    return;
+  }
+
+  if (!PET_TYPES.some((type) => type.id === typeId)) {
+    showToast("请选择有效的宠物类型", "warning");
+    return;
+  }
+
+  app.ui.supervisedFeedReAdoptDraftTypeId = typeId;
+  render();
+}
+
+function endSupervisedFeedSession() {
+  if (!app.ui.supervisedFeedSessionActive) {
+    setView("teacher-dashboard");
+    return;
+  }
+  if (!confirm("确认结束本次班会喂养会话？结束后将返回教师模式。")) {
+    return;
+  }
+  showToast("班会喂养会话已结束", "info");
+  setView("teacher-dashboard");
+}
+
 function openDisplayFocus(studentId) {
   if (!studentId) return;
   setDisplayMotion("enter");
@@ -593,7 +751,7 @@ function renderSetupChecklist() {
         <div class="card task-card">
           <span class="badge">第 3 步</span>
           <h3>开始课堂使用</h3>
-          <p>可以先试着给一位学生加分，再进入展示模式。</p>
+          <p>可以先给一位学生加分，再进入班会喂养模式体验首次重新领养与喂养。</p>
           <div class="form-actions">
             <button class="ghost" data-action="go-rewards">发放奖励</button>
             <button class="ghost" data-action="go-display">展示模式</button>
@@ -803,6 +961,7 @@ function render() {
   } else {
     document.body.classList.remove("display-mode");
   }
+  document.body.classList.toggle("supervised-feed-mode", app.view === "supervised-feed-view");
   document.body.classList.toggle(
     "display-modal-open",
     app.view === "display-view" && getDisplayFocusContext().hasFocus
@@ -852,6 +1011,10 @@ function render() {
     case "student-view":
       setModeIndicator("查看宠物");
       mainEl.innerHTML = renderStudentView();
+      break;
+    case "supervised-feed-view":
+      setModeIndicator("班会喂养");
+      mainEl.innerHTML = renderSupervisedFeedView();
       break;
     case "display-view":
       setModeIndicator("展示模式");
@@ -1020,6 +1183,7 @@ function renderTeacherDashboard() {
       <div class="form-actions">
         <button class="primary" data-action="go-students">学生管理</button>
         <button class="primary" data-action="go-rewards">发放奖励</button>
+        <button class="accent" data-action="go-supervised-feed">班会喂养</button>
         <button class="ghost" data-action="go-display">展示模式</button>
         <button class="ghost" data-action="go-import">导入导出</button>
         <button class="ghost" data-action="go-settings">系统设置</button>
@@ -1512,6 +1676,245 @@ function renderStudentView() {
   `;
 }
 
+function renderSupervisedFeedView() {
+  if (!app.auth.teacher) {
+    return `
+      <section class="section">
+        <div class="section-header">
+          <h2>班会喂养模式</h2>
+          <button class="primary" data-action="go-dashboard">返回教师模式</button>
+        </div>
+        <p class="notice">请先进入教师模式，再由老师开启班会喂养会话。</p>
+      </section>
+    `;
+  }
+
+  if (!app.ui.supervisedFeedSessionActive) {
+    return `
+      <section class="section">
+        <div class="section-header">
+          <h2>班会喂养模式</h2>
+          <button class="primary" data-action="go-dashboard">返回教师模式</button>
+        </div>
+        <p class="notice">当前没有进行中的班会喂养会话，请从教师首页重新开启。</p>
+      </section>
+    `;
+  }
+
+  const students = getSortedStudents({ ignoreSearch: true });
+  const visitedIds = getSupervisedFeedVisitedStudentIds();
+  const visitedIdSet = new Set(visitedIds);
+  let selectedStudent = app.ui.supervisedFeedStudentId ? getStudentById(app.ui.supervisedFeedStudentId) : null;
+  let pet = selectedStudent ? getPetByStudentId(selectedStudent.id) : null;
+
+  if (app.ui.supervisedFeedStudentId && (!selectedStudent || !pet)) {
+    app.ui.supervisedFeedStudentId = null;
+    app.ui.supervisedFeedReAdoptDraftTypeId = null;
+    selectedStudent = null;
+    pet = null;
+  }
+
+  const sessionHeader = `
+    <section class="section supervised-feed-shell">
+      <div class="supervised-feed-session">
+        <div class="supervised-feed-session-copy">
+          <span class="badge">班会喂养模式</span>
+          <h2>${selectedStudent ? `${escapeHtml(selectedStudent.name)} 的回合` : "请同学选择自己"}</h2>
+          <p>
+            ${selectedStudent
+              ? "可以连续喂养多次，也可以本次先不喂、继续攒分后返回名单。"
+              : "老师已开启受监督喂养会话。请学生从名单中选择自己，完成后返回名单，由老师手动结束会话。"}
+          </p>
+        </div>
+        <div class="supervised-feed-session-meta">
+          <span class="pill">本轮已轮到 ${visitedIds.length} / ${students.length} 人</span>
+          <span class="pill">${selectedStudent ? `当前：${escapeHtml(selectedStudent.name)}` : "当前：等待选择"}</span>
+          <button class="danger" data-action="end-supervised-feed-session">结束会话</button>
+        </div>
+      </div>
+    </section>
+  `;
+
+  if (!students.length) {
+    return `
+      ${sessionHeader}
+      <section class="section">
+        <p class="notice">还没有学生，请先返回教师模式添加学生后再开启班会喂养。</p>
+      </section>
+    `;
+  }
+
+  if (!selectedStudent || !pet) {
+    return `
+      ${sessionHeader}
+      <section class="section supervised-feed-shell">
+        <p class="notice">请学生按座号顺序点击自己的卡片进入。本轮已轮到的同学会被标记，但仍可再次进入。</p>
+        <div class="grid cols-3 supervised-feed-grid">
+          ${students
+            .map((student) => {
+              const studentPet = getPetByStudentId(student.id);
+              if (!studentPet) return "";
+              const visited = visitedIdSet.has(student.id);
+              return `
+                <article class="card supervised-feed-student-card${visited ? " is-visited" : ""}">
+                  <div class="supervised-feed-card-head">
+                    <h3>${escapeHtml(student.name)}</h3>
+                    <span class="pill">${SEAT_LABEL} ${escapeHtml(student.seatNo)}</span>
+                  </div>
+                  <div class="pill-list">
+                    <span class="pill">积分 ${student.points || 0}</span>
+                    <span class="pill">宠物 ${escapeHtml(getPetTypeName(studentPet))}</span>
+                    ${student.group ? `<span class="pill">分组 ${escapeHtml(student.group)}</span>` : ""}
+                    <span class="pill${visited ? " supervised-feed-visited-pill" : ""}">
+                      ${visited ? "本轮已轮到" : "等待选择"}
+                    </span>
+                  </div>
+                  <button
+                    class="${visited ? "ghost" : "accent"}"
+                    data-action="select-supervised-feed-student"
+                    data-id="${student.id}"
+                  >
+                    ${visited ? "再次进入" : "选择我"}
+                  </button>
+                </article>
+              `;
+            })
+            .join("")}
+        </div>
+      </section>
+    `;
+  }
+
+  const reAdoptStatus = getPetReAdoptStatus(selectedStudent.id, pet);
+  const reAdoptDraftTypeId =
+    app.ui.supervisedFeedReAdoptDraftTypeId &&
+    app.ui.supervisedFeedReAdoptDraftTypeId !== pet.petType &&
+    PET_TYPES.some((type) => type.id === app.ui.supervisedFeedReAdoptDraftTypeId)
+      ? app.ui.supervisedFeedReAdoptDraftTypeId
+      : null;
+  const selectedReAdoptType = reAdoptDraftTypeId ? getPetType(reAdoptDraftTypeId) : null;
+  const reAdoptSection = reAdoptStatus.available
+    ? `
+      <section class="section">
+        <div class="section-header">
+          <h2>一次重新领养机会</h2>
+          <span class="pill">每人仅 1 次</span>
+        </div>
+        <p class="notice">${escapeHtml(reAdoptStatus.message)}</p>
+        <div class="grid cols-3 supervised-feed-type-grid">
+          ${PET_TYPES.map((type) => {
+            const isCurrent = type.id === pet.petType;
+            const isSelected = type.id === reAdoptDraftTypeId;
+            return `
+              <article class="card supervised-feed-type-card${isCurrent ? " is-current" : ""}${isSelected ? " is-selected" : ""}">
+                <img src="${type.icon}" alt="${escapeHtml(type.name)}" />
+                <h3>${escapeHtml(type.name)}</h3>
+                <p>${isCurrent ? "这是你当前的宠物" : "可以改为这个宠物类型"}</p>
+                <button
+                  class="${isCurrent ? "ghost" : isSelected ? "primary" : "accent"}"
+                  data-action="select-supervised-feed-pet-type"
+                  data-id="${type.id}"
+                  ${isCurrent ? "disabled" : ""}
+                >
+                  ${isCurrent ? "当前宠物" : isSelected ? "已选中" : "选这个"}
+                </button>
+              </article>
+            `;
+          }).join("")}
+        </div>
+        <div class="form-actions compact-actions supervised-feed-re-adopt-actions">
+          <span class="pill">${selectedReAdoptType ? `已选择：${escapeHtml(selectedReAdoptType.name)}` : "请先选择一种新的宠物"}</span>
+          <button
+            class="${selectedReAdoptType ? "accent" : "ghost"}"
+            data-action="confirm-supervised-re-adopt"
+            ${selectedReAdoptType ? "" : "disabled"}
+          >
+            确认重新领养
+          </button>
+        </div>
+      </section>
+    `
+    : `
+      <section class="section">
+        <div class="section-header">
+          <h2>一次重新领养机会</h2>
+          <span class="pill">每人仅 1 次</span>
+        </div>
+        <p class="notice">${escapeHtml(reAdoptStatus.message)}</p>
+      </section>
+    `;
+
+  return `
+    ${sessionHeader}
+    <section class="section">
+      <div class="section-header">
+        <h2>当前学生</h2>
+        <div class="form-actions compact-actions">
+          <button class="ghost" data-action="return-supervised-feed-roster">返回名单</button>
+          <button class="ghost" data-action="skip-supervised-feed">本次先不喂，继续攒分</button>
+        </div>
+      </div>
+      <div class="pet-card">
+        <div class="pet-visual">
+          <img src="${getPetIcon(pet)}" alt="宠物" />
+          <div class="badge">等级 ${pet.level}</div>
+        </div>
+        <div class="stat-grid">
+          <div class="stat-row">
+            <span class="stat-label">姓名：${escapeHtml(selectedStudent.name)}（${SEAT_LABEL} ${escapeHtml(
+              selectedStudent.seatNo
+            )}）</span>
+            <span class="pill">积分余额：${selectedStudent.points || 0}</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">宠物：${escapeHtml(getPetTypeName(pet))}</span>
+          </div>
+          ${renderXpProgress(pet)}
+          <div class="stat-row">
+            <span class="stat-label">饥饿值</span>
+            <div class="progress"><span style="width:${pet.hunger}%"></span></div>
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">心情值</span>
+            <div class="progress"><span style="width:${pet.mood}%"></span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    ${reAdoptSection}
+
+    <section class="section">
+      <div class="section-header">
+        <h2>选择食物</h2>
+        <span class="pill">${reAdoptStatus.available ? "可先重新领养，再继续喂养" : "可以连续喂养多次"}</span>
+      </div>
+      <div class="grid cols-3">
+        ${app.data.catalog
+          .map((item) => {
+            const disabled = (selectedStudent.points || 0) < item.pricePoints;
+            return `
+              <div class="card supervised-feed-food-card">
+                <h3>${escapeHtml(item.name)}</h3>
+                <p>价格：${item.pricePoints} 积分</p>
+                <p>效果：${formatEffects(item.effects)}</p>
+                <button
+                  class="${disabled ? "ghost" : "accent"}"
+                  data-action="supervised-feed"
+                  data-id="${item.id}"
+                  ${disabled ? "disabled" : ""}
+                >
+                  ${disabled ? "积分不足" : "喂食"}
+                </button>
+              </div>
+            `;
+          })
+          .join("")}
+      </div>
+    </section>
+  `;
+}
+
 function renderDisplayView() {
   const allStudents = getSortedStudents({ ignoreSearch: true });
   const searchTerm = app.ui.displaySearch.trim();
@@ -1738,7 +2141,7 @@ function renderLedgerTable(entries) {
             ]
               .filter(Boolean)
               .join(" / ");
-            const change = [delta, effect].filter(Boolean).join(" · ") || "-";
+            const change = [delta, effect].filter(Boolean).join(" · ") || (entry.type === "re_adopt" ? "重新领养" : "-");
             return `
               <tr>
                 <td>${formatTime(entry.timestamp)}</td>
@@ -1901,6 +2304,7 @@ function feedStudent(studentId, catalogId) {
   const newLevel = computeLevel(pet.xp);
   const leveledUp = newLevel > pet.level;
   pet.level = newLevel;
+  pet.reAdoptAvailable = false;
   pet.updatedAt = Date.now();
 
   addLedgerEntry({
@@ -1916,6 +2320,53 @@ function feedStudent(studentId, catalogId) {
 
   saveData();
   showToast(leveledUp ? "喂养成功，宠物升级！" : "喂养成功", "info");
+}
+
+function reAdoptPetForStudent(studentId, targetPetTypeId) {
+  const student = getStudentById(studentId);
+  const pet = getPetByStudentId(studentId);
+  const targetType = PET_TYPES.find((type) => type.id === targetPetTypeId);
+
+  if (!app.auth.teacher || !app.ui.supervisedFeedSessionActive || app.ui.supervisedFeedStudentId !== studentId) {
+    showToast("请先由老师开启对应学生的班会喂养回合", "warning");
+    return false;
+  }
+  if (!student || !pet || !targetType) {
+    showToast("请选择有效的宠物类型", "warning");
+    return false;
+  }
+  if (!isPetEligibleForReAdopt(studentId, pet)) {
+    showToast(getPetReAdoptStatus(studentId, pet).message, "warning");
+    return false;
+  }
+  if (pet.petType === targetPetTypeId) {
+    showToast("请选择一种不同的宠物", "warning");
+    return false;
+  }
+
+  const previousTypeName = getPetTypeName(pet);
+  if (!confirm(`确认把宠物从“${previousTypeName}”改为“${targetType.name}”吗？此机会每人只有一次。`)) {
+    return false;
+  }
+
+  clearLastUndoBatch();
+  const now = Date.now();
+  pet.petType = targetPetTypeId;
+  pet.reAdoptAvailable = false;
+  pet.reAdoptedAt = now;
+  pet.updatedAt = now;
+
+  addLedgerEntry({
+    timestamp: now,
+    studentId: student.id,
+    type: "re_adopt",
+    reason: `重新领养：${previousTypeName} -> ${targetType.name}`
+  });
+
+  app.ui.supervisedFeedReAdoptDraftTypeId = null;
+  saveData();
+  showToast(`重新领养成功，已换成${targetType.name}`, "info");
+  return true;
 }
 
 function validateImport(data) {
@@ -2121,6 +2572,14 @@ function bindEvents() {
       case "go-student":
         setView("student-view");
         break;
+      case "go-supervised-feed":
+        if (!app.auth.teacher) {
+          setView("teacher-dashboard");
+          return;
+        }
+        startSupervisedFeedSession();
+        setView("supervised-feed-view");
+        break;
       case "go-display":
         setView("display-view");
         break;
@@ -2202,6 +2661,31 @@ function bindEvents() {
         feedStudent(app.params.id, actionEl.dataset.id);
         render();
         break;
+      case "select-supervised-feed-student":
+        selectSupervisedFeedStudent(actionEl.dataset.id);
+        break;
+      case "select-supervised-feed-pet-type":
+        selectSupervisedFeedReAdoptType(actionEl.dataset.id);
+        break;
+      case "confirm-supervised-re-adopt":
+        reAdoptPetForStudent(app.ui.supervisedFeedStudentId, app.ui.supervisedFeedReAdoptDraftTypeId);
+        render();
+        break;
+      case "return-supervised-feed-roster":
+      case "skip-supervised-feed":
+        leaveSupervisedFeedStudent();
+        break;
+      case "supervised-feed":
+        if (!app.auth.teacher || !app.ui.supervisedFeedSessionActive || !app.ui.supervisedFeedStudentId) {
+          showToast("请先由老师开启班会喂养会话", "warning");
+          return;
+        }
+        feedStudent(app.ui.supervisedFeedStudentId, actionEl.dataset.id);
+        render();
+        break;
+      case "end-supervised-feed-session":
+        endSupervisedFeedSession();
+        break;
       case "quick-award": {
         const input = document.getElementById("awardPoints");
         if (input) input.value = actionEl.dataset.value || "";
@@ -2257,7 +2741,11 @@ function bindEvents() {
           displayPage: 0,
           displaySelectedId: null,
           displayMotion: "",
-          displayFreeze: false
+          displayFreeze: false,
+          supervisedFeedSessionActive: false,
+          supervisedFeedStudentId: null,
+          supervisedFeedVisitedStudentIds: [],
+          supervisedFeedReAdoptDraftTypeId: null
         };
         app.auth.teacher = false;
         sessionStorage.removeItem("teacherAuthed");
