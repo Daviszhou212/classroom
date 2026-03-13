@@ -99,6 +99,10 @@ body::after {
   margin-left: auto;
 }
 
+.teacher-mode .header-actions {
+  display: none;
+}
+
 .brand {
   display: flex;
   gap: 14px;

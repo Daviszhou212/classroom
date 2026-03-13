@@ -7,7 +7,7 @@
   - 教师模式：学生管理、加分、教师代喂、班会喂养入口、导入导出、系统设置。
   - 学生展示：仅查看宠物与积分。
   - 班会喂养模式：老师开启后，学生轮流自选自己；首次有效喂养前可使用 1 次重新领养机会，之后可连续喂养或跳过。
-  - 展示模式：分页展示学生宠物，支持搜索与翻页，只读。
+  - 展示模式：分页展示学生宠物，支持搜索与翻页，只读；仅从主页进入，退出后返回主页。
 - 数据机制：
   - 业务数据存储在浏览器 `LocalStorage`（键名：`class-pet-mvp`）。
   - 支持导出/导入 JSON 备份。
@@ -15,12 +15,13 @@
 - 业务约束：
   - 不启用扣分功能（仅加分）。
   - 展示模式只读，不允许喂养或积分变更。
+  - 教师模式内不提供主页/展示模式出口；离开教师态只能显式退出。
   - 班会喂养会话需由老师手动结束。
 
 ## 2. 技术栈与运行依赖
 - 技术栈：
-  - `index.html` + `styles/main.css` + `scripts/app.js`（Vanilla JS）。
-- 浏览器能力依赖（来自 `scripts/app.js`）：
+  - `index.html` + `styles/main.css` + `scripts/app/*.js` + `scripts/app.js`（Vanilla JS，多脚本串行加载）。
+- 浏览器能力依赖（来自 `scripts/app/*.js` 与 `scripts/app.js`）：
   - `localStorage`、`sessionStorage`
   - `FileReader`、`Blob`、`URL.createObjectURL`
   - `TextEncoder`、`crypto.subtle`（PIN 哈希；不可用时走 `legacy` 兜底）
@@ -32,8 +33,9 @@
   - 同时定义了本地字体回退（如 `"Microsoft YaHei"`、`"PingFang SC"`）。
 
 ## 3. 目录与关键入口
-- `index.html`：页面入口，加载 `styles/main.css` 与 `scripts/app.js`。
-- `scripts/app.js`：核心业务逻辑（状态、渲染、事件绑定、导入导出、数据存储）。
+- `index.html`：页面入口，加载 `styles/main.css`、`scripts/vendor/pinyin-pro.js`、`scripts/app/*.js` 与 `scripts/app.js`。
+- `scripts/app/`：核心业务逻辑拆分目录（状态、数据模型、渲染、业务动作、事件绑定）。
+- `scripts/app.js`：薄入口，仅负责调用 `ClassroomPetApp.init()`。
 - `styles/main.css`：全部界面样式与响应式规则。
 - `data-samples/students.csv`：CSV 导入模板。
 - `assets/pet.svg`、`assets/pets/*.svg`：宠物与品牌图标资源。
@@ -111,11 +113,11 @@
   - 项目无构建产物与发布脚本，发布单元即静态文件本身（`index.html`、`styles/`、`scripts/`、`assets/`、`data-samples/`）。
 
 ### 发布前核对项
-- [ ] `index.html` 能正确加载 `styles/main.css` 与 `scripts/app.js`。
-- [ ] 教师模式可登录/退出，PIN 设置与修改流程可用。
+- [ ] `index.html` 能正确按顺序加载 `styles/main.css`、`scripts/vendor/pinyin-pro.js`、`scripts/app/*.js` 与 `scripts/app.js`。
+- [ ] 教师模式可登录/退出，PIN 设置与修改流程可用，且教师态顶部仅保留“退出教师模式”。
 - [ ] 学生新增、编辑、删除后，宠物档案与流水状态一致。
 - [ ] 班会喂养模式可进入、返回名单、一次重新领养、连续喂养、手动结束会话。
-- [ ] 展示模式分页、搜索、详情弹层可正常操作，且保持只读。
+- [ ] 展示模式仅从主页进入，退出后返回主页；分页、搜索、详情弹层可正常操作且保持只读。
 - [ ] JSON 导出文件可生成，JSON 导入校验通过并可恢复数据。
 - [ ] CSV 导入按模板可成功，且会按预期覆盖 `students/pets/ledger`。
 - [ ] 危险操作“清空所有数据”有二次确认并按预期执行。
@@ -123,7 +125,7 @@
 
 ## 9. 维护检查清单（日/周/月）
 ### 日常（每个使用日）
-- [ ] 打开主页、教师模式、班会喂养模式、展示模式，确认页面可进入。
+- [ ] 打开主页、教师模式、班会喂养模式、展示模式，确认页面可进入；教师态确认只剩退出按钮。
 - [ ] 新增 1 名学生并删除，确认宠物档案同步创建/删除。
 - [ ] 执行一次加分、一次教师代喂、一次班会喂养，确认 `ledger` 有记录。
 - [ ] 抽查 1 名未喂养学生，确认其可在班会喂养中重新领养 1 次；完成后资格立即失效。
@@ -145,7 +147,7 @@
 ## 10. 附录
 - 学生 CSV 模板头（`data-samples/students.csv`）：
   - `studentNo,name,group,alias`
-- 关键数据结构（`scripts/app.js`）：
+- 关键数据结构（`scripts/app/core.js`、`scripts/app/model.js`）：
   - 顶层：`schemaVersion`、`students`、`pets`、`ledger`、`catalog`、`config`
   - `pets[*]`：包含 `petType`、`reAdoptAvailable`、`reAdoptedAt`
   - `ledger[*].type`：包含 `award`、`feed`、`re_adopt` 等业务动作
@@ -156,6 +158,7 @@
 - 关键文档与入口：
   - `README.md`
   - `index.html`
+  - `scripts/app/`
   - `scripts/app.js`
   - `styles/main.css`
   - `data-samples/students.csv`
