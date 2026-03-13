@@ -26,6 +26,9 @@
     setAuthError,
     updateAuthError,
     isValidPin,
+    clearBulkQuickAwardDraft,
+    resetQuickAwardDrafts,
+    setBulkQuickAwardDraft,
     setView,
     logoutTeacher,
     startSupervisedFeedSession,
@@ -36,6 +39,7 @@
     openDisplayFocus,
     closeDisplayFocus,
     stepDisplayFocus,
+    triggerDisplayInteraction,
     shouldIgnoreDisplayHotkeyTarget,
     render
   } = views;
@@ -46,7 +50,7 @@
     getTeacherPinState,
     bulkAwardStudents,
     undoLastBulkAward,
-    awardPoints,
+    buyFoodForStudent,
     feedStudent,
     reAdoptPetForStudent,
     importData,
@@ -92,13 +96,6 @@
           }
           setView("teacher-students");
           break;
-        case "go-rewards":
-          if (!app.auth.teacher) {
-            setView("teacher-dashboard");
-            return;
-          }
-          setView("teacher-rewards");
-          break;
         case "go-import":
           if (!app.auth.teacher) {
             setView("teacher-dashboard");
@@ -133,6 +130,9 @@
           break;
         case "toggle-bulk-student":
           toggleBulkSelectedStudent(actionEl.dataset.id, actionEl.checked);
+          if (!getBulkSelectedStudentIds().length) {
+            clearBulkQuickAwardDraft();
+          }
           render();
           break;
         case "select-bulk-filtered":
@@ -149,12 +149,26 @@
           break;
         case "clear-bulk-selection":
           clearBulkSelection();
+          clearBulkQuickAwardDraft();
           render();
           break;
         case "bulk-quick-award": {
           const delta = Number(actionEl.dataset.points || 0);
+          setBulkQuickAwardDraft(delta);
+          render();
+          break;
+        }
+        case "confirm-bulk-quick-award": {
+          const delta = Number(app.ui.bulkQuickAwardDraft || 0);
+          if (!delta) {
+            showToast("请先选择一个快捷加分值", "warning");
+            return;
+          }
           const reason = QUICK_AWARD_PRESETS[delta] || "加分";
-          bulkAwardStudents(getBulkSelectedStudentIds(), delta, reason);
+          const success = bulkAwardStudents(getBulkSelectedStudentIds(), delta, reason);
+          if (success) {
+            clearBulkQuickAwardDraft();
+          }
           render();
           break;
         }
@@ -162,14 +176,6 @@
           undoLastBulkAward();
           render();
           break;
-        case "quick-student-award": {
-          const studentId = actionEl.dataset.id;
-          const delta = Number(actionEl.dataset.points || 0);
-          const reason = QUICK_AWARD_PRESETS[delta] || "课堂表现";
-          awardPoints(studentId, delta, reason);
-          render();
-          break;
-        }
         case "edit-student":
           app.ui.editingStudentId = actionEl.dataset.id;
           setView("teacher-students");
@@ -189,6 +195,9 @@
           app.data.pets = app.data.pets.filter((pet) => pet.studentId !== actionEl.dataset.id);
           app.data.ledger = app.data.ledger.filter((entry) => entry.studentId !== actionEl.dataset.id);
           setBulkSelectedStudentIds(getBulkSelectedStudentIds().filter((id) => id !== actionEl.dataset.id));
+          if (!getBulkSelectedStudentIds().length) {
+            clearBulkQuickAwardDraft();
+          }
           saveData();
           render();
           showToast("已删除学生", "warning");
@@ -196,14 +205,6 @@
         }
         case "view-student":
           setView("teacher-student-detail", { id: actionEl.dataset.id });
-          break;
-        case "feed":
-          if (!app.auth.teacher) {
-            showToast("仅教师可喂养", "warning");
-            return;
-          }
-          feedStudent(app.params.id, actionEl.dataset.id);
-          render();
           break;
         case "select-supervised-feed-student":
           selectSupervisedFeedStudent(actionEl.dataset.id);
@@ -219,6 +220,14 @@
         case "skip-supervised-feed":
           leaveSupervisedFeedStudent();
           break;
+        case "buy-food":
+          if (!app.auth.teacher || !app.ui.supervisedFeedSessionActive || !app.ui.supervisedFeedStudentId) {
+            showToast("请先由老师开启班会喂养会话", "warning");
+            return;
+          }
+          buyFoodForStudent(app.ui.supervisedFeedStudentId, actionEl.dataset.id);
+          render();
+          break;
         case "supervised-feed":
           if (!app.auth.teacher || !app.ui.supervisedFeedSessionActive || !app.ui.supervisedFeedStudentId) {
             showToast("请先由老师开启班会喂养会话", "warning");
@@ -230,11 +239,6 @@
         case "end-supervised-feed-session":
           endSupervisedFeedSession();
           break;
-        case "quick-award": {
-          const input = document.getElementById("awardPoints");
-          if (input) input.value = actionEl.dataset.value || "";
-          break;
-        }
         case "select-student":
           app.ui.studentSelectedId = actionEl.dataset.id;
           render();
@@ -254,6 +258,12 @@
           break;
         case "display-next-student":
           stepDisplayFocus(1);
+          break;
+        case "display-greet":
+          triggerDisplayInteraction("greet");
+          break;
+        case "display-encourage":
+          triggerDisplayInteraction("encourage");
           break;
         case "noop":
           break;
@@ -277,6 +287,7 @@
             studentSearch: "",
             editingStudentId: null,
             studentSelectedId: null,
+            bulkQuickAwardDraft: "",
             bulkSelectedStudentIds: [],
             bulkPointsDraft: "",
             bulkReasonTemplateDraft: "",
@@ -293,6 +304,7 @@
           };
           app.auth.teacher = false;
           sessionStorage.removeItem("teacherAuthed");
+          resetQuickAwardDrafts();
           saveData();
           showToast("数据已清空", "warning");
           setView("home");
@@ -505,7 +517,8 @@
               seatNo,
               group,
               alias,
-              points: 0
+              points: 0,
+              foodInventory: []
             };
             app.data.students.push(newStudent);
             app.data.pets.push(createPetForStudent(newStudent));
@@ -522,17 +535,9 @@
           const reason = form.bulkReasonCustom.value.trim() || form.bulkReasonTemplate.value || "加分";
           const success = bulkAwardStudents(selectedIds, points, reason);
           if (success) {
+            clearBulkQuickAwardDraft();
             form.reset();
           }
-          render();
-          break;
-        }
-        case "award-points": {
-          const studentId = form.studentId.value;
-          const points = Number(form.points.value);
-          const reason = form.reasonCustom.value.trim() || form.reasonTemplate.value || "加分";
-          awardPoints(studentId, points, reason);
-          form.reset();
           render();
           break;
         }

@@ -4,9 +4,9 @@
 - 项目名称：班级电子宠物管理系统（离线 MVP）。
 - 运行形态：纯前端静态页面，无后端服务、无构建步骤。
 - 核心模式：
-  - 教师模式：学生管理、加分、教师代喂、班会喂养入口、导入导出、系统设置。
+  - 教师模式：学生管理、加分、班会喂养入口、导入导出、系统设置。
   - 学生展示：仅查看宠物与积分。
-  - 班会喂养模式：老师开启后，学生轮流自选自己；首次有效喂养前可使用 1 次重新领养机会，之后可连续喂养或跳过。
+  - 班会喂养模式：老师开启后，学生轮流自选自己；首次有效喂养前可使用 1 次重新领养机会，之后可先兑换食物到个人背包，再连续喂养或跳过。
   - 展示模式：分页展示学生宠物，支持搜索与翻页，只读；仅从主页进入，退出后返回主页。
 - 数据机制：
   - 业务数据存储在浏览器 `LocalStorage`（键名：`class-pet-mvp`）。
@@ -15,6 +15,7 @@
 - 业务约束：
   - 不启用扣分功能（仅加分）。
   - 展示模式只读，不允许喂养或积分变更。
+  - 喂养仅通过班会喂养模式进行，不保留教师代喂入口。
   - 教师模式内不提供主页/展示模式出口；离开教师态只能显式退出。
   - 班会喂养会话需由老师手动结束。
 
@@ -38,7 +39,8 @@
 - `scripts/app.js`：薄入口，仅负责调用 `ClassroomPetApp.init()`。
 - `styles/main.css`：全部界面样式与响应式规则。
 - `data-samples/students.csv`：CSV 导入模板。
-- `assets/pet.svg`、`assets/pets/*.svg`：宠物与品牌图标资源。
+- `assets/pet.svg`：品牌图标资源。
+- `assets/pets/<type>/*.png`：运行时宠物图片资源；每种宠物 4 张变体。
 - `README.md`：运行方式、功能概览、数据与约束说明。
 
 ## 4. 本地启动与停止
@@ -57,7 +59,7 @@
   - 在 `README.md`、`index.html`、`scripts/app.js`、`styles/main.css` 未发现环境变量读取逻辑（如 `process.env`、`import.meta.env`）。
 - 代码内置配置（`scripts/app.js`）：
   - `STORAGE_KEY = "class-pet-mvp"`：本地存储键。
-  - `DEFAULT_DATA.schemaVersion = 4`：数据结构版本。
+  - `DEFAULT_DATA.schemaVersion = 6`：数据结构版本。
   - `DEFAULT_DATA.config.rules`：
     - `xpPerLevel: 50`
     - `defaultHunger: 60`
@@ -75,18 +77,20 @@
   3. 首次无 PIN 时进入设置 PIN 流程；后续使用 PIN 登录。
 - 学生与宠物维护流程：
   1. 教师在“学生管理”新增/编辑学生（`save-student`）。
-  2. 新增学生时自动随机创建宠物档案，并默认附带 1 次重新领养机会；`syncData()` 保证学生与宠物一一对应，并补齐旧数据字段。
-  3. 删除学生时同步清理该学生的宠物与流水记录。
+  2. 新增学生时自动从 8 种宠物类型（`rabbit / panda / raccoon / capybara / cat / turtle / dog / bird`）中随机创建宠物档案，并默认附带 1 次重新领养机会；`syncData()` 保证学生与宠物一一对应，并补齐旧数据字段。
+  3. 加载或导入旧数据时，若发现 `hamster` / `fish` 或其他无效 `petType`，会自动随机迁移到 8 种现行宠物之一。
+  4. 删除学生时同步清理该学生的宠物与流水记录。
 - 积分与喂养流程：
-  1. 奖励通过 `award-points` 增加积分并写入流水（`ledger`）。
-  2. 喂养通过 `feed` 扣积分、改饥饿/心情/XP，并按规则更新等级。
-  3. 全流程落地到 `ledger` 便于追溯。
-  4. 班会喂养通过 `supervised-feed-view` 组织学生轮流自选自己；学生在首次有效喂养前可执行 1 次 `re_adopt` 更换宠物类型，不影响等级、XP、饥饿值、心情值与积分。
-  5. 一旦学生完成首次有效喂养，重新领养资格立即失效；结束会话后清空运行时状态。
+  1. 教师在“学生管理”中通过批量加分增加积分并写入流水（`ledger`）。
+  2. 班会喂养中先通过 `buy_food` 扣积分并把食物加入学生个人库存，再通过 `feed` 从库存消耗 1 份食物，改饥饿/心情/XP，并按规则更新等级。
+  3. 学生食物库存保存在 `students[*].foodInventory`，未使用完会跨回合保留。
+  4. 全流程落地到 `ledger` 便于追溯。
+  5. 班会喂养通过 `supervised-feed-view` 组织学生轮流自选自己；学生在首次有效喂养前可执行 1 次 `re_adopt` 更换宠物类型，不影响等级、XP、饥饿值、心情值与积分。
+  6. 仅兑换食物不会消耗重新领养资格；首次真实喂养后资格立即失效；结束会话后清空运行时状态，但不清空库存。
 - 数据备份/恢复流程：
   1. 在“导入导出”执行“导出 JSON”（文件名形如 `class-pet-backup-YYYYMMDD.json`）。
   2. 执行“导入数据”时先校验 `schemaVersion/students/pets/ledger/config`。
-  3. 导入确认后覆盖当前数据，再 `normalizeData()` + `syncData()`。
+  3. 导入确认后覆盖当前数据，再 `normalizeData()` + `syncData()`；旧宠物类型会在此阶段自动迁移。
 - 学生名单 CSV 导入流程：
   1. 选择 CSV 文件执行导入。
   2. 解析成功后会覆盖现有 `students/pets/ledger`。
@@ -107,7 +111,7 @@
   2. 若涉及数据结构，先“导出 JSON”做基线备份。
 - 实施与验证：
   1. 修改后至少用两种启动方式之一验证页面可用（直接打开或本地静态服务器）。
-  2. 逐项回归：教师登录、学生管理、加分、教师代喂、班会喂养、展示模式分页/搜索、JSON 导入导出、CSV 导入。
+  2. 逐项回归：教师登录、学生管理、加分、班会喂养、展示模式分页/搜索、JSON 导入导出、CSV 导入。
   3. 观察浏览器控制台是否出现脚本错误。
 - 发布方式（当前仓库可验证范围内）：
   - 项目无构建产物与发布脚本，发布单元即静态文件本身（`index.html`、`styles/`、`scripts/`、`assets/`、`data-samples/`）。
@@ -116,9 +120,12 @@
 - [ ] `index.html` 能正确按顺序加载 `styles/main.css`、`scripts/vendor/pinyin-pro.js`、`scripts/app/*.js` 与 `scripts/app.js`。
 - [ ] 教师模式可登录/退出，PIN 设置与修改流程可用，且教师态顶部仅保留“退出教师模式”。
 - [ ] 学生新增、编辑、删除后，宠物档案与流水状态一致。
+- [ ] 运行时仅使用 8 种宠物类型；旧类型 `hamster` / `fish` 导入后会自动迁移。
 - [ ] 班会喂养模式可进入、返回名单、一次重新领养、连续喂养、手动结束会话。
+- [ ] 班会喂养模式支持先兑换食物，再从个人背包喂养；未使用食物会保留到后续回合。
 - [ ] 展示模式仅从主页进入，退出后返回主页；分页、搜索、详情弹层可正常操作且保持只读。
 - [ ] JSON 导出文件可生成，JSON 导入校验通过并可恢复数据。
+- [ ] 宠物图片来自 `assets/pets/<type>/*.png`，进入宠物页面后会按页面会话随机轮换且同页不闪烁。
 - [ ] CSV 导入按模板可成功，且会按预期覆盖 `students/pets/ledger`。
 - [ ] 危险操作“清空所有数据”有二次确认并按预期执行。
 - [ ] 浏览器控制台无阻断级错误（语法错误/运行时异常）。
@@ -127,9 +134,11 @@
 ### 日常（每个使用日）
 - [ ] 打开主页、教师模式、班会喂养模式、展示模式，确认页面可进入；教师态确认只剩退出按钮。
 - [ ] 新增 1 名学生并删除，确认宠物档案同步创建/删除。
-- [ ] 执行一次加分、一次教师代喂、一次班会喂养，确认 `ledger` 有记录。
+- [ ] 执行一次加分、一次班会喂养，确认 `ledger` 有记录。
+- [ ] 抽查 1 名学生，确认兑换食物会写入 `buy_food`，真正喂养会写入 `feed`，两者分开记录。
 - [ ] 抽查 1 名未喂养学生，确认其可在班会喂养中重新领养 1 次；完成后资格立即失效。
 - [ ] 结束前导出一次 JSON 备份。
+- [ ] 抽查一名学生反复切换同一页面内的交互状态，确认宠物图片不闪烁；离开再进入页面后允许切换到同类另一张图。
 
 ### 每周
 - [ ] 使用 `data-samples/students.csv` 做一次完整导入演练。
@@ -149,8 +158,10 @@
   - `studentNo,name,group,alias`
 - 关键数据结构（`scripts/app/core.js`、`scripts/app/model.js`）：
   - 顶层：`schemaVersion`、`students`、`pets`、`ledger`、`catalog`、`config`
+  - `students[*].foodInventory`：学生长期食物库存，结构为 `{ catalogId, quantity }[]`
   - `pets[*]`：包含 `petType`、`reAdoptAvailable`、`reAdoptedAt`
-  - `ledger[*].type`：包含 `award`、`feed`、`re_adopt` 等业务动作
+  - `petType` 合法值：`rabbit`、`panda`、`raccoon`、`capybara`、`cat`、`turtle`、`dog`、`bird`
+  - `ledger[*].type`：包含 `award`、`buy_food`、`feed`、`re_adopt` 等业务动作
   - 配置：`config.teacherPinHash`、`config.rules.xpPerLevel/defaultHunger/defaultMood`
 - 关键存储位：
   - `LocalStorage`: `class-pet-mvp`

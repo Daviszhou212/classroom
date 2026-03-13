@@ -501,6 +501,11 @@ label {
   margin-top: 12px;
 }
 
+.student-list-header-actions {
+  margin-top: 0;
+  justify-content: flex-end;
+}
+
 .field-hint {
   margin: 8px 0 0;
   color: var(--ink-2);
@@ -558,6 +563,11 @@ label {
   align-items: center;
 }
 
+.table-actions button.small {
+  min-width: 72px;
+  padding: 0 12px;
+}
+
 .table-actions button.text {
   min-width: auto;
   height: auto;
@@ -607,21 +617,23 @@ label {
 .pet-card {
   display: grid;
   gap: 16px;
-  grid-template-columns: minmax(140px, 1fr) 2fr;
+  grid-template-columns: minmax(180px, 1.15fr) 2fr;
   align-items: center;
 }
 
 .pet-visual {
   background: linear-gradient(135deg, #fff5e1, #f0fdfa);
   border-radius: var(--radius-md);
-  padding: 12px;
+  padding: 10px;
   text-align: center;
   border: 1px solid rgba(15, 118, 110, 0.12);
 }
 
 .pet-visual img {
-  width: 120px;
-  height: 120px;
+  width: clamp(168px, 18vw, 212px);
+  height: clamp(168px, 18vw, 212px);
+  max-width: 100%;
+  object-fit: contain;
 }
 
 .stat-grid {
@@ -832,11 +844,13 @@ body.supervised-feed-mode .header-exit {
 }
 
 .supervised-feed-grid,
+.supervised-feed-inventory-grid,
 .supervised-feed-food-card {
   align-items: stretch;
 }
 
 .supervised-feed-student-card,
+.supervised-feed-inventory-card,
 .supervised-feed-food-card {
   align-content: start;
 }
@@ -880,9 +894,10 @@ body.supervised-feed-mode .header-exit {
 }
 
 .supervised-feed-type-card img {
-  width: 82px;
-  height: 82px;
+  width: 112px;
+  height: 112px;
   justify-self: center;
+  object-fit: contain;
 }
 
 .supervised-feed-type-card.is-current {
@@ -952,8 +967,33 @@ body.display-mode .mode-indicator {
   display: flex;
   gap: 12px;
   align-items: center;
-  justify-content: center;
+  justify-content: space-between;
   flex-wrap: wrap;
+}
+
+.display-header-back {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+
+.display-header-back button {
+  min-width: 108px;
+}
+
+.display-header-search {
+  flex: 1 1 320px;
+  display: flex;
+  justify-content: center;
+  min-width: 0;
+}
+
+.display-header-meta {
+  display: flex;
+  justify-content: flex-end;
+  flex: 0 0 auto;
 }
 
 .display-search {
@@ -1074,7 +1114,7 @@ body.display-mode .mode-indicator {
 .display-visual {
   display: grid;
   place-items: center;
-  padding: 10px;
+  padding: 6px;
   border-radius: 14px;
   background: linear-gradient(135deg, #fff4e5, #e8f7f4);
   border: 1px solid rgba(15, 118, 110, 0.12);
@@ -1082,10 +1122,11 @@ body.display-mode .mode-indicator {
 }
 
 .display-visual img {
-  width: 96px;
-  height: 96px;
+  width: clamp(140px, 14vw, 168px);
+  height: clamp(140px, 14vw, 168px);
   cursor: pointer;
   transition: transform 0.2s ease;
+  object-fit: contain;
 }
 
 .display-visual img:hover {
@@ -1177,6 +1218,7 @@ body.display-mode .mode-indicator {
 }
 
 .display-focus-visual {
+  position: relative;
   display: grid;
   gap: 14px;
   justify-items: center;
@@ -1185,11 +1227,23 @@ body.display-mode .mode-indicator {
   border-radius: 22px;
   background: rgba(255, 255, 255, 0.7);
   border: 1px solid rgba(255, 255, 255, 0.76);
+  transition: box-shadow 0.2s ease, border-color 0.2s ease, background 0.2s ease;
+}
+
+.display-focus-visual.is-interacting {
+  box-shadow: 0 0 0 2px rgba(20, 184, 166, 0.14), 0 20px 36px rgba(15, 23, 42, 0.12);
 }
 
 .display-focus-visual img {
-  width: min(260px, 38vw);
-  height: min(260px, 38vw);
+  width: min(340px, 44vw);
+  height: min(340px, 44vw);
+  object-fit: contain;
+}
+
+.display-focus-reaction-slot {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
 }
 
 .display-focus-panel {
@@ -1249,14 +1303,51 @@ body.display-mode .mode-indicator {
   color: var(--ink-2);
 }
 
-.display-focus-placeholder-actions {
+.display-focus-interaction-actions {
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
 }
 
-.display-focus-placeholder-actions button {
+.display-focus-interaction-actions button {
   min-width: 130px;
+}
+
+.display-focus-interaction-status {
+  min-height: 72px;
+}
+
+.display-focus-interaction-feedback {
+  display: grid;
+  gap: 8px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.82);
+  border: 1px solid rgba(15, 118, 110, 0.16);
+}
+
+.display-focus-interaction-feedback strong {
+  color: var(--primary);
+  font-size: 1rem;
+}
+
+.display-focus-interaction-empty {
+  color: var(--ink-2);
+  font-size: 0.95rem;
+}
+
+.display-focus-reaction-bubble {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 1;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.94);
+  color: var(--primary);
+  font-weight: 700;
+  box-shadow: 0 16px 28px rgba(15, 23, 42, 0.14);
+  animation: displayReactionBubble 0.28s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
 .display-focus-nav {
@@ -1370,6 +1461,17 @@ body.display-mode .mode-indicator {
   }
 }
 
+@keyframes displayReactionBubble {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   * {
     animation: none !important;
@@ -1402,6 +1504,16 @@ body.display-mode .mode-indicator {
 
   .display-grid {
     grid-template-columns: repeat(2, minmax(180px, 1fr));
+  }
+
+  .display-header {
+    align-items: flex-start;
+  }
+
+  .display-header-search,
+  .display-header-meta {
+    width: 100%;
+    justify-content: flex-start;
   }
 
   .display-search input {
@@ -1443,6 +1555,11 @@ body.display-mode .mode-indicator {
     align-items: flex-start;
   }
 
+  .student-list-header-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
   .supervised-feed-session,
   .supervised-feed-session-meta,
   .supervised-feed-card-head {
@@ -1468,12 +1585,12 @@ body.display-mode .mode-indicator {
     padding: 18px;
   }
 
-  .display-focus-placeholder-actions,
+  .display-focus-interaction-actions,
   .display-focus-nav {
     width: 100%;
   }
 
-  .display-focus-placeholder-actions button,
+  .display-focus-interaction-actions button,
   .display-focus-nav button {
     flex: 1 1 140px;
   }
@@ -1505,6 +1622,10 @@ body.display-mode .mode-indicator {
   .bulk-toolbar-actions button,
   .table-actions button,
   .compact-actions button {
+    flex: 1 1 140px;
+  }
+
+  .student-list-header-actions button {
     flex: 1 1 140px;
   }
 }

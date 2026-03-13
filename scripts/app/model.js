@@ -53,14 +53,41 @@
     );
   }
 
-  function normalizeStudent(student) {
+  function normalizeFoodInventory(items, catalog = DEFAULT_DATA.catalog) {
+    const catalogIds = new Set((Array.isArray(catalog) ? catalog : []).map((item) => item.id));
+    const quantityByCatalogId = new Map();
+
+    if (!Array.isArray(items)) {
+      return [];
+    }
+
+    items.forEach((entry) => {
+      if (!entry || typeof entry !== "object") return;
+      const catalogId = String(entry.catalogId || "").trim();
+      const quantity = Math.floor(Number(entry.quantity) || 0);
+      if (!catalogId || !catalogIds.has(catalogId) || quantity <= 0) return;
+      quantityByCatalogId.set(catalogId, (quantityByCatalogId.get(catalogId) || 0) + quantity);
+    });
+
+    return (Array.isArray(catalog) ? catalog : [])
+      .map((item) => ({
+        catalogId: item.id,
+        quantity: quantityByCatalogId.get(item.id) || 0
+      }))
+      .filter((entry) => entry.quantity > 0);
+  }
+
+  function normalizeStudent(student, catalog = DEFAULT_DATA.catalog) {
     const normalizedStudent = {
       points: 0,
       group: "",
       alias: "",
+      foodInventory: [],
       ...student
     };
+    normalizedStudent.points = Math.max(0, Number(normalizedStudent.points) || 0);
     normalizedStudent.alias = sanitizeAlias(normalizedStudent.alias) || generateAlias(normalizedStudent.name);
+    normalizedStudent.foodInventory = normalizeFoodInventory(normalizedStudent.foodInventory, catalog);
     return normalizedStudent;
   }
 
@@ -103,7 +130,7 @@
       normalized.meta.lastUndoBatch = null;
     }
 
-    normalized.students = normalized.students.map(normalizeStudent);
+    normalized.students = normalized.students.map((student) => normalizeStudent(student, normalized.catalog));
     normalized.ledger = normalized.ledger.map((entry) => ({
       ...entry,
       batchId: typeof entry.batchId === "string" ? entry.batchId : undefined
@@ -113,6 +140,7 @@
     );
     normalized.pets = normalized.pets.map((pet) => {
       const normalizedPet = { ...pet };
+      ensurePetType(normalizedPet);
       ensurePetReAdoptState(normalizedPet, {
         hasFeedHistory: feedHistoryStudentIds.has(normalizedPet.studentId)
       });
@@ -127,6 +155,7 @@
   }
 
   function syncData() {
+    app.data.students = app.data.students.map((student) => normalizeStudent(student, app.data.catalog));
     const studentIds = new Set(app.data.students.map((student) => student.id));
     app.data.pets = app.data.pets.filter((pet) => studentIds.has(pet.studentId));
 
@@ -167,12 +196,45 @@
     return app.data.students.find((student) => student.id === id);
   }
 
+  function getCatalogItem(catalogId) {
+    return app.data.catalog.find((item) => item.id === catalogId) || null;
+  }
+
   function getPetByStudentId(studentId) {
     return app.data.pets.find((pet) => pet.studentId === studentId);
   }
 
   function getPetType(typeId) {
     return PET_TYPES.find((type) => type.id === typeId) || PET_TYPES[0];
+  }
+
+  function getPetTypePreviewIcon(typeOrId, variantIndex = 0) {
+    const petType =
+      typeof typeOrId === "string" || !typeOrId
+        ? getPetType(typeOrId)
+        : getPetType(typeOrId.id);
+    const variants = Array.isArray(petType.variants) ? petType.variants : [];
+    if (!variants.length) return "";
+    const safeIndex = Math.max(0, Math.min(variants.length - 1, Number(variantIndex) || 0));
+    return variants[safeIndex];
+  }
+
+  function hashString(value) {
+    const text = String(value || "");
+    let hash = 2166136261;
+    for (let i = 0; i < text.length; i += 1) {
+      hash ^= text.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return hash >>> 0;
+  }
+
+  function getPetVariantIndex(pet, seed = app.ui.petVariantSessionSeed) {
+    const petType = getPetType(pet && pet.petType);
+    const variants = Array.isArray(petType.variants) ? petType.variants : [];
+    if (!variants.length) return 0;
+    const hashInput = [seed, pet && pet.id, pet && pet.studentId, petType.id].join("|");
+    return hashString(hashInput) % variants.length;
   }
 
   function pickPetTypeId() {
@@ -184,6 +246,7 @@
     if (!pet.petType || !PET_TYPES.some((type) => type.id === pet.petType)) {
       pet.petType = pickPetTypeId();
     }
+    return pet.petType;
   }
 
   function hasStudentFeedHistory(studentId) {
@@ -203,7 +266,15 @@
   }
 
   function getPetIcon(pet) {
-    return getPetType(pet.petType).icon;
+    if (!pet) {
+      return getPetTypePreviewIcon(PET_TYPES[0] && PET_TYPES[0].id);
+    }
+    const petType = getPetType(pet.petType);
+    const variants = Array.isArray(petType.variants) ? petType.variants : [];
+    if (!variants.length) {
+      return getPetTypePreviewIcon(petType);
+    }
+    return variants[getPetVariantIndex(pet)];
   }
 
   function getPetTypeName(pet) {
@@ -247,6 +318,18 @@
 
   function isPetEligibleForReAdopt(studentId, pet) {
     return getPetReAdoptStatus(studentId, pet).available;
+  }
+
+  function getStudentFoodInventoryEntries(studentId) {
+    const student = getStudentById(studentId);
+    if (!student) return [];
+
+    return normalizeFoodInventory(student.foodInventory, app.data.catalog)
+      .map((entry) => ({
+        ...entry,
+        item: getCatalogItem(entry.catalogId)
+      }))
+      .filter((entry) => entry.item);
   }
 
   function getSortedStudents(options = {}) {
@@ -483,8 +566,12 @@
     syncData,
     createPetForStudent,
     getStudentById,
+    getCatalogItem,
+    getStudentFoodInventoryEntries,
     getPetByStudentId,
     getPetType,
+    getPetTypePreviewIcon,
+    getPetVariantIndex,
     pickPetTypeId,
     ensurePetType,
     hasStudentFeedHistory,

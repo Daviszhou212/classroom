@@ -15,7 +15,7 @@
       5: "今天特别棒！"
     },
     DEFAULT_DATA: {
-      schemaVersion: 4,
+      schemaVersion: 6,
       students: [],
       pets: [],
       ledger: [],
@@ -53,13 +53,86 @@
       }
     },
     PET_TYPES: [
-      { id: "dog", name: "小狗", icon: "assets/pets/dog.svg" },
-      { id: "cat", name: "小猫", icon: "assets/pets/cat.svg" },
-      { id: "rabbit", name: "小兔", icon: "assets/pets/rabbit.svg" },
-      { id: "hamster", name: "仓鼠", icon: "assets/pets/hamster.svg" },
-      { id: "turtle", name: "小乌龟", icon: "assets/pets/turtle.svg" },
-      { id: "fish", name: "小鱼", icon: "assets/pets/fish.svg" },
-      { id: "bird", name: "小鸟", icon: "assets/pets/bird.svg" }
+      {
+        id: "rabbit",
+        name: "兔子",
+        variants: [
+          "assets/pets/rabbit/top_left.png",
+          "assets/pets/rabbit/top_right.png",
+          "assets/pets/rabbit/bottom_left.png",
+          "assets/pets/rabbit/bottom_right.png"
+        ]
+      },
+      {
+        id: "panda",
+        name: "熊猫",
+        variants: [
+          "assets/pets/panda/top_left.png",
+          "assets/pets/panda/top_right.png",
+          "assets/pets/panda/bottom_left.png",
+          "assets/pets/panda/bottom_right.png"
+        ]
+      },
+      {
+        id: "raccoon",
+        name: "浣熊",
+        variants: [
+          "assets/pets/raccoon/top_left.png",
+          "assets/pets/raccoon/top_right.png",
+          "assets/pets/raccoon/bottom_left.png",
+          "assets/pets/raccoon/bottom_right.png"
+        ]
+      },
+      {
+        id: "capybara",
+        name: "水豚",
+        variants: [
+          "assets/pets/capybara/top_left.png",
+          "assets/pets/capybara/top_right.png",
+          "assets/pets/capybara/bottom_left.png",
+          "assets/pets/capybara/bottom_right.png"
+        ]
+      },
+      {
+        id: "cat",
+        name: "小猫",
+        variants: [
+          "assets/pets/cat/top_left.png",
+          "assets/pets/cat/top_right.png",
+          "assets/pets/cat/bottom_left.png",
+          "assets/pets/cat/bottom_right.png"
+        ]
+      },
+      {
+        id: "turtle",
+        name: "乌龟",
+        variants: [
+          "assets/pets/turtle/top_left.png",
+          "assets/pets/turtle/top_right.png",
+          "assets/pets/turtle/bottom_left.png",
+          "assets/pets/turtle/bottom_right.png"
+        ]
+      },
+      {
+        id: "dog",
+        name: "小狗",
+        variants: [
+          "assets/pets/dog/top_left.png",
+          "assets/pets/dog/top_right.png",
+          "assets/pets/dog/bottom_left.png",
+          "assets/pets/dog/bottom_right.png"
+        ]
+      },
+      {
+        id: "bird",
+        name: "小鸟",
+        variants: [
+          "assets/pets/bird/top_left.png",
+          "assets/pets/bird/top_right.png",
+          "assets/pets/bird/bottom_left.png",
+          "assets/pets/bird/bottom_right.png"
+        ]
+      }
     ]
   };
 
@@ -76,6 +149,7 @@
         studentSearch: "",
         editingStudentId: null,
         studentSelectedId: null,
+        bulkQuickAwardDraft: "",
         bulkSelectedStudentIds: [],
         bulkPointsDraft: "",
         bulkReasonTemplateDraft: "",
@@ -87,13 +161,22 @@
         displayMotion: "",
         displayFreeze: false,
         displaySearchComposing: false,
+        displayInteraction: {
+          studentId: null,
+          type: "",
+          reaction: "",
+          message: "",
+          stamp: 0
+        },
+        petVariantSessionSeed: Date.now(),
         supervisedFeedSessionActive: false,
         supervisedFeedStudentId: null,
         supervisedFeedVisitedStudentIds: [],
         supervisedFeedReAdoptDraftTypeId: null
       }
     },
-    displayMotionResetTimer: null
+    displayMotionResetTimer: null,
+    displayInteractionResetTimer: null
   };
 
   const dom = {

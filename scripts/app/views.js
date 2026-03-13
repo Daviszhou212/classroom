@@ -15,8 +15,10 @@
   const {
     getStudentById,
     getPetByStudentId,
+    getStudentFoodInventoryEntries,
     getPetType,
     getPetIcon,
+    getPetTypePreviewIcon,
     getPetTypeName,
     getPetReAdoptStatus,
     getSortedStudents,
@@ -28,6 +30,16 @@
     getLastUndoBatchSummary,
     getXpProgress
   } = model;
+  const DISPLAY_INTERACTION_COPY = {
+    greet: {
+      reaction: "你好呀！",
+      message: (studentName, petTypeName) => `${studentName} 向${petTypeName}打了个招呼，${petTypeName}马上精神起来了。`
+    },
+    encourage: {
+      reaction: "继续加油！",
+      message: (studentName, petTypeName) => `${studentName} 给${petTypeName}送上鼓励，${petTypeName}看起来更有干劲了。`
+    }
+  };
 
   function setAuthError(message = "") {
     const errorEl = document.getElementById("authError");
@@ -67,25 +79,178 @@
     return !message;
   }
 
+  function clearBulkQuickAwardDraft() {
+    app.ui.bulkQuickAwardDraft = "";
+  }
+
+  function resetQuickAwardDrafts() {
+    clearBulkQuickAwardDraft();
+  }
+
+  function setBulkQuickAwardDraft(points) {
+    const value = Number(points);
+    if (!Number.isFinite(value) || value <= 0) return;
+    app.ui.bulkQuickAwardDraft = Number(app.ui.bulkQuickAwardDraft || 0) === value ? "" : String(value);
+  }
+
   function isTeacherManagementView(view = app.view) {
     return typeof view === "string" && view.startsWith("teacher");
   }
 
+  function clearDisplayInteraction(options = {}) {
+    if (state.displayInteractionResetTimer) {
+      clearTimeout(state.displayInteractionResetTimer);
+      state.displayInteractionResetTimer = null;
+    }
+    app.ui.displayInteraction = {
+      studentId: null,
+      type: "",
+      reaction: "",
+      message: "",
+      stamp: 0
+    };
+    if (options.syncDom) {
+      syncDisplayInteractionDom();
+    }
+    if (options.render) {
+      render();
+    }
+  }
+
+  function getActiveDisplayInteraction(focus = getDisplayFocusContext()) {
+    if (
+      !focus.hasFocus ||
+      !app.ui.displayInteraction ||
+      app.ui.displayInteraction.studentId !== focus.student.id
+    ) {
+      return null;
+    }
+    return app.ui.displayInteraction;
+  }
+
+  function getDisplayInteractionButtonClass(type, activeInteraction) {
+    if (type === "greet") {
+      return activeInteraction && activeInteraction.type === type ? "primary" : "ghost";
+    }
+    if (type === "encourage") {
+      return activeInteraction && activeInteraction.type === type ? "accent" : "ghost";
+    }
+    return "ghost";
+  }
+
+  function renderDisplayInteractionBubble(activeInteraction) {
+    if (!activeInteraction) return "";
+    return `<div class="display-focus-reaction-bubble">${escapeHtml(activeInteraction.reaction)}</div>`;
+  }
+
+  function renderDisplayInteractionFeedback(activeInteraction) {
+    if (!activeInteraction) {
+      return `<p class="display-focus-interaction-empty">点一下按钮，给宠物一个课堂互动反馈。</p>`;
+    }
+    return `
+      <div class="display-focus-interaction-feedback">
+        <strong>${escapeHtml(activeInteraction.reaction)}</strong>
+        <p>${escapeHtml(activeInteraction.message)}</p>
+      </div>
+    `;
+  }
+
+  function syncDisplayInteractionDom() {
+    if (app.view !== "display-view") return false;
+    const focus = getDisplayFocusContext();
+    if (!focus.hasFocus) return false;
+
+    const focusCard = document.querySelector(".display-focus-card");
+    if (!focusCard) return false;
+
+    const activeInteraction = getActiveDisplayInteraction(focus);
+    const visualEl = focusCard.querySelector("[data-display-interaction-visual]");
+    const bubbleSlotEl = focusCard.querySelector("[data-display-interaction-bubble]");
+    const feedbackSlotEl = focusCard.querySelector("[data-display-interaction-feedback]");
+    const greetButtonEl = focusCard.querySelector('[data-action="display-greet"]');
+    const encourageButtonEl = focusCard.querySelector('[data-action="display-encourage"]');
+
+    if (visualEl) {
+      visualEl.classList.toggle("is-interacting", Boolean(activeInteraction));
+      visualEl.classList.toggle("is-greet", Boolean(activeInteraction && activeInteraction.type === "greet"));
+      visualEl.classList.toggle("is-encourage", Boolean(activeInteraction && activeInteraction.type === "encourage"));
+    }
+
+    if (bubbleSlotEl) {
+      bubbleSlotEl.innerHTML = renderDisplayInteractionBubble(activeInteraction);
+    }
+
+    if (feedbackSlotEl) {
+      feedbackSlotEl.innerHTML = renderDisplayInteractionFeedback(activeInteraction);
+    }
+
+    if (greetButtonEl) {
+      greetButtonEl.className = getDisplayInteractionButtonClass("greet", activeInteraction);
+    }
+
+    if (encourageButtonEl) {
+      encourageButtonEl.className = getDisplayInteractionButtonClass("encourage", activeInteraction);
+    }
+
+    return true;
+  }
+
+  function triggerDisplayInteraction(type) {
+    const focus = getDisplayFocusContext();
+    const config = DISPLAY_INTERACTION_COPY[type];
+    if (!focus.hasFocus || !config) return;
+
+    app.ui.displayInteraction = {
+      studentId: focus.student.id,
+      type,
+      reaction: config.reaction,
+      message: config.message(focus.student.name, getPetTypeName(focus.pet)),
+      stamp: Date.now()
+    };
+
+    if (state.displayInteractionResetTimer) {
+      clearTimeout(state.displayInteractionResetTimer);
+    }
+    state.displayInteractionResetTimer = setTimeout(() => {
+      clearDisplayInteraction({ syncDom: true });
+    }, 2600);
+
+    syncDisplayInteractionDom();
+  }
+
+  function refreshPetVariantSessionSeed() {
+    app.ui.petVariantSessionSeed = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  }
+
   function setView(view, params = {}) {
+    if (view === "teacher-rewards") {
+      view = app.auth.teacher ? "teacher-students" : "teacher-dashboard";
+    }
     if (app.auth.teacher && isTeacherManagementView() && (view === "home" || view === "display-view")) {
       showToast("请先退出教师模式", "warning");
       return false;
     }
+    const leavingTeacherStudents = app.view === "teacher-students" && view !== "teacher-students";
     const leavingDisplay = app.view === "display-view" && view !== "display-view";
     const leavingSupervisedFeed = app.view === "supervised-feed-view" && view !== "supervised-feed-view";
+    if (leavingTeacherStudents) {
+      resetQuickAwardDrafts();
+    }
     if (leavingDisplay) {
       app.ui.displaySearch = "";
       app.ui.displayPage = 0;
       app.ui.displaySelectedId = null;
       app.ui.displayFreeze = false;
+      clearDisplayInteraction();
     }
     if (leavingSupervisedFeed) {
       resetSupervisedFeedSession();
+    }
+    const routeChanged =
+      app.view !== view ||
+      JSON.stringify(app.params || {}) !== JSON.stringify(params || {});
+    if (routeChanged) {
+      refreshPetVariantSessionSeed();
     }
     app.view = view;
     app.params = params;
@@ -191,6 +356,7 @@
 
   function openDisplayFocus(studentId) {
     if (!studentId) return;
+    clearDisplayInteraction();
     setDisplayMotion("enter");
     app.ui.displaySelectedId = studentId;
     app.ui.displayFreeze = true;
@@ -199,6 +365,7 @@
 
   function closeDisplayFocus() {
     if (!app.ui.displaySelectedId) return;
+    clearDisplayInteraction();
     setDisplayMotion("");
     app.ui.displaySelectedId = null;
     app.ui.displayFreeze = true;
@@ -210,6 +377,7 @@
     if (!focus.hasFocus) return;
     const nextStudent = focus.students[focus.index + step];
     if (!nextStudent) return;
+    clearDisplayInteraction();
     setDisplayMotion(step > 0 ? "next" : "prev");
     app.ui.displaySelectedId = nextStudent.id;
     app.ui.displayFreeze = true;
@@ -264,42 +432,6 @@
     `;
   }
 
-  function renderSetupChecklist() {
-    if (app.data.students.length > 0) return "";
-
-    return `
-      <section class="section">
-        <div class="section-header">
-          <h2>首次使用 3 步</h2>
-          <span class="pill">先完成一次班级初始化</span>
-        </div>
-        <div class="grid cols-3">
-          <div class="card task-card">
-            <span class="badge">第 1 步</span>
-            <h3>导入学生名单</h3>
-            <p>推荐先从 CSV 导入，省去逐个录入的时间。</p>
-            <button class="primary" data-action="go-import">去导入</button>
-          </div>
-          <div class="card task-card">
-            <span class="badge">第 2 步</span>
-            <h3>检查学生列表</h3>
-            <p>确认姓名、座号/学号、分组都正确。</p>
-            <button class="ghost" data-action="go-students">查看学生</button>
-          </div>
-          <div class="card task-card">
-            <span class="badge">第 3 步</span>
-            <h3>开始课堂使用</h3>
-            <p>可以先给一位学生加分，再进入班会喂养模式体验首次重新领养与喂养。</p>
-            <div class="form-actions">
-              <button class="ghost" data-action="go-rewards">发放奖励</button>
-              <button class="ghost" data-action="go-supervised-feed">班会喂养</button>
-            </div>
-          </div>
-        </div>
-      </section>
-    `;
-  }
-
   function formatEffects(effects) {
     const parts = [];
     if (effects.hunger) {
@@ -328,6 +460,10 @@
   function render() {
     updateHeaderButtons();
     const displayFreeze = app.ui.displayFreeze;
+
+    if (app.view === "teacher-rewards") {
+      app.view = app.auth.teacher ? "teacher-students" : "teacher-dashboard";
+    }
 
     if (app.view === "display-view") {
       document.body.classList.add("display-mode");
@@ -364,10 +500,6 @@
       case "teacher-students":
         setModeIndicator("学生管理");
         mainEl.innerHTML = renderTeacherStudents();
-        break;
-      case "teacher-rewards":
-        setModeIndicator("发放奖励");
-        mainEl.innerHTML = renderTeacherRewards();
         break;
       case "teacher-student-detail":
         setModeIndicator("学生详情");
@@ -529,51 +661,13 @@
     `;
   }
 
-  function renderTeacherDashboard() {
-    const recentLedger = app.data.ledger.slice().sort((a, b) => b.timestamp - a.timestamp).slice(0, 8);
-    return `
-      ${renderBackupReminder()}
-      ${renderSetupChecklist()}
-      <section class="section">
-        <h2>教师仪表盘</h2>
-        <div class="grid cols-3">
-          <div class="card">
-            <span class="badge">学生数量</span>
-            <h3>${app.data.students.length}</h3>
-            <p>每位学生自动拥有一个宠物档案。</p>
-          </div>
-          <div class="card">
-            <span class="badge">流水记录</span>
-            <h3>${app.data.ledger.length}</h3>
-            <p>奖励/喂养等操作全部进入流水。</p>
-          </div>
-        </div>
-      </section>
-
-      <section class="section">
-        <h2>快捷入口</h2>
-        <div class="form-actions">
-          <button class="primary" data-action="go-students">学生管理</button>
-          <button class="primary" data-action="go-rewards">发放奖励</button>
-          <button class="accent" data-action="go-supervised-feed">班会喂养</button>
-          <button class="ghost" data-action="go-import">导入导出</button>
-          <button class="ghost" data-action="go-settings">系统设置</button>
-        </div>
-      </section>
-
-      <section class="section">
-        <h2>最近流水</h2>
-        ${renderLedgerTable(recentLedger)}
-      </section>
-    `;
-  }
-
   function renderTeacherStudents() {
     const students = getSortedStudents();
     const editing = app.ui.editingStudentId ? getStudentById(app.ui.editingStudentId) : null;
     const selectedIds = getBulkSelectedStudentIds();
     const selectedIdSet = new Set(selectedIds);
     const selectedCount = selectedIds.length;
+    const bulkQuickAwardDraft = Number(app.ui.bulkQuickAwardDraft || 0);
     const groupNames = getBulkGroupNames();
     const filteredIds = students.map((student) => student.id);
     const hasUndoBatch = Boolean(app.data.meta.lastUndoBatch);
@@ -620,6 +714,21 @@
       </section>
 
       <section class="section">
+        <div class="section-header">
+          <h2>学生列表</h2>
+          <div class="form-actions compact-actions student-list-header-actions">
+            ${selectedCount ? `
+              <button
+                class="${bulkQuickAwardDraft ? "accent" : "ghost"}"
+                data-action="confirm-bulk-quick-award"
+                ${bulkQuickAwardDraft ? "" : "disabled"}
+              >
+                ${bulkQuickAwardDraft ? `确定加分 +${bulkQuickAwardDraft}` : "确定加分"}
+              </button>
+            ` : ""}
+            <button class="primary" data-action="go-dashboard">返回仪表盘</button>
+          </div>
+        </div>
         <div class="form-row">
           <div>
             <label>搜索/过滤</label>
@@ -645,10 +754,60 @@
             </div>
           </div>
         ` : ""}
-        <div class="section-header">
-          <h2>学生列表</h2>
-          <button class="primary" data-action="go-dashboard">返回仪表盘</button>
-        </div>
+        ${selectedCount ? `
+          <div class="bulk-toolbar bulk-award-panel">
+            <div class="section-header">
+              <h2>批量加分</h2>
+              <span class="pill">统一给已选学生发放同样的奖励</span>
+            </div>
+            <div class="form-actions compact-actions">
+              <button class="${bulkQuickAwardDraft === 1 ? "primary" : "ghost"} small" data-action="bulk-quick-award" data-points="1">已选学生 +1</button>
+              <button class="${bulkQuickAwardDraft === 2 ? "primary" : "ghost"} small" data-action="bulk-quick-award" data-points="2">已选学生 +2</button>
+              <button class="${bulkQuickAwardDraft === 5 ? "primary" : "ghost"} small" data-action="bulk-quick-award" data-points="5">已选学生 +5</button>
+            </div>
+            <form data-action="bulk-award">
+              <div class="form-row">
+                <div>
+                  <label>自定义加分数值</label>
+                  <input
+                    id="bulkPointsDraft"
+                    name="bulkPoints"
+                    type="number"
+                    min="1"
+                    step="1"
+                    placeholder="例如：3"
+                    value="${escapeHtml(app.ui.bulkPointsDraft)}"
+                  />
+                </div>
+                <div>
+                  <label>理由模板</label>
+                  <select id="bulkReasonTemplateDraft" name="bulkReasonTemplate">
+                    <option value="">请选择理由</option>
+                    ${AWARD_REASON_TEMPLATES
+                      .map(
+                        (reason) => `
+                          <option value="${escapeHtml(reason)}" ${app.ui.bulkReasonTemplateDraft === reason ? "selected" : ""}>${escapeHtml(reason)}</option>
+                        `
+                      )
+                      .join("")}
+                  </select>
+                </div>
+                <div>
+                  <label>自定义理由（可选）</label>
+                  <input
+                    id="bulkReasonCustomDraft"
+                    name="bulkReasonCustom"
+                    placeholder="例如：小组合作认真"
+                    value="${escapeHtml(app.ui.bulkReasonCustomDraft)}"
+                  />
+                </div>
+              </div>
+              <div class="form-actions">
+                <button class="primary" type="submit">批量加分</button>
+              </div>
+            </form>
+          </div>
+        ` : ""}
         ${students.length ? `
           <table class="table">
             <thead>
@@ -663,8 +822,8 @@
             </thead>
             <tbody>
               ${students
-                .map(
-                  (student) => `
+                .map((student) => {
+                  return `
                 <tr class="${selectedIdSet.has(student.id) ? "selected-row" : ""}">
                   <td class="select-cell">
                     <input
@@ -681,128 +840,18 @@
                   <td>${student.points || 0}</td>
                   <td>
                     <div class="table-actions">
-                      <button class="ghost small" data-action="quick-student-award" data-id="${student.id}" data-points="1">+1</button>
-                      <button class="ghost small" data-action="quick-student-award" data-id="${student.id}" data-points="2">+2</button>
-                      <button class="ghost small" data-action="quick-student-award" data-id="${student.id}" data-points="5">+5</button>
                       <button class="text" data-action="view-student" data-id="${student.id}">详情</button>
                       <button class="text" data-action="edit-student" data-id="${student.id}">编辑</button>
                       <button class="text" data-action="delete-student" data-id="${student.id}">删除</button>
                     </div>
                   </td>
                 </tr>
-              `
-                )
+              `;
+                })
                 .join("")}
             </tbody>
           </table>
         ` : `<p class="notice">还没有学生，请先添加。</p>`}
-      </section>
-
-      ${selectedCount ? `
-        <section class="section">
-          <div class="section-header">
-            <h2>批量加分</h2>
-            <span class="pill">统一给已选学生发放同样的奖励</span>
-          </div>
-          <div class="form-actions compact-actions">
-            <button class="ghost small" data-action="bulk-quick-award" data-points="1">已选学生 +1</button>
-            <button class="ghost small" data-action="bulk-quick-award" data-points="2">已选学生 +2</button>
-            <button class="ghost small" data-action="bulk-quick-award" data-points="5">已选学生 +5</button>
-          </div>
-          <form data-action="bulk-award">
-            <div class="form-row">
-              <div>
-                <label>自定义加分数值</label>
-                <input
-                  id="bulkPointsDraft"
-                  name="bulkPoints"
-                  type="number"
-                  min="1"
-                  step="1"
-                  placeholder="例如：3"
-                  value="${escapeHtml(app.ui.bulkPointsDraft)}"
-                />
-              </div>
-              <div>
-                <label>理由模板</label>
-                <select id="bulkReasonTemplateDraft" name="bulkReasonTemplate">
-                  <option value="">请选择理由</option>
-                  ${AWARD_REASON_TEMPLATES
-                    .map(
-                      (reason) => `
-                        <option value="${escapeHtml(reason)}" ${app.ui.bulkReasonTemplateDraft === reason ? "selected" : ""}>${escapeHtml(reason)}</option>
-                      `
-                    )
-                    .join("")}
-                </select>
-              </div>
-              <div>
-                <label>自定义理由（可选）</label>
-                <input
-                  id="bulkReasonCustomDraft"
-                  name="bulkReasonCustom"
-                  placeholder="例如：小组合作认真"
-                  value="${escapeHtml(app.ui.bulkReasonCustomDraft)}"
-                />
-              </div>
-            </div>
-            <div class="form-actions">
-              <button class="primary" type="submit">批量加分</button>
-            </div>
-          </form>
-        </section>
-      ` : ""}
-    `;
-  }
-
-  function renderTeacherRewards() {
-    const students = getSortedStudents();
-    return `
-      <section class="section">
-        <h2>发放奖励（仅加分）</h2>
-        ${students.length ? `
-          <form data-action="award-points">
-            <div class="form-row">
-              <div>
-                <label>选择学生</label>
-                <select name="studentId" required>
-                  <option value="">请选择学生</option>
-                  ${students
-                    .map(
-                      (student) => `
-                    <option value="${student.id}">${SEAT_LABEL} ${escapeHtml(student.seatNo)} ${escapeHtml(student.name)}</option>
-                  `
-                    )
-                    .join("")}
-                </select>
-              </div>
-              <div>
-                <label>加分数值</label>
-                <input id="awardPoints" type="number" name="points" min="1" required />
-                <div class="pill-list" style="margin-top:8px;">
-                  <button class="ghost small" type="button" data-action="quick-award" data-value="1">+1</button>
-                  <button class="ghost small" type="button" data-action="quick-award" data-value="2">+2</button>
-                  <button class="ghost small" type="button" data-action="quick-award" data-value="5">+5</button>
-                </div>
-              </div>
-              <div>
-                <label>理由模板</label>
-                <select name="reasonTemplate">
-                  <option value="">请选择理由</option>
-                  ${AWARD_REASON_TEMPLATES.map((reason) => `<option value="${escapeHtml(reason)}">${escapeHtml(reason)}</option>`).join("")}
-                </select>
-              </div>
-              <div>
-                <label>自定义理由（可选）</label>
-                <input name="reasonCustom" placeholder="例如：按时完成阅读任务" />
-              </div>
-            </div>
-            <div class="form-actions">
-              <button class="primary" type="submit">确认加分</button>
-              <button class="ghost" type="button" data-action="go-dashboard">返回仪表盘</button>
-            </div>
-          </form>
-        ` : `<p class="notice">暂无学生，请先添加学生。</p>`}
       </section>
     `;
   }
@@ -855,27 +904,6 @@
               <div class="progress"><span style="width:${pet.mood}%"></span></div>
             </div>
           </div>
-        </div>
-      </section>
-
-      <section class="section">
-        <h2>喂养（教师代操作）</h2>
-        <div class="grid cols-3">
-          ${app.data.catalog
-            .map((item) => {
-              const disabled = (student.points || 0) < item.pricePoints;
-              return `
-              <div class="card">
-                <h3>${escapeHtml(item.name)}</h3>
-                <p>价格：${item.pricePoints} 积分</p>
-                <p>效果：${formatEffects(item.effects)}</p>
-                <button class="${disabled ? "ghost" : "accent"}" data-action="feed" data-id="${item.id}" ${disabled ? "disabled" : ""}>
-                  ${disabled ? "积分不足" : "喂食"}
-                </button>
-              </div>
-            `;
-            })
-            .join("")}
         </div>
       </section>
 
@@ -1028,7 +1056,7 @@
     return `
       <section class="section">
         <h2>查看宠物</h2>
-        <p class="notice">这里只能查看宠物状态；加分和喂养仍由老师操作。</p>
+        <p class="notice">这里只能查看宠物状态；加分由老师操作，喂养请在班会喂养模式中进行。</p>
         ${students.length ? `
           <div class="grid cols-3">
             ${students
@@ -1095,7 +1123,7 @@
             <h2>${selectedStudent ? `${escapeHtml(selectedStudent.name)} 的回合` : "请同学选择自己"}</h2>
             <p>
               ${selectedStudent
-                ? "可以连续喂养多次，也可以本次先不喂、继续攒分后返回名单。"
+                ? "可以先兑换多份食物，再从背包里选择要喂的食物；也可以本次先不喂、继续攒分后返回名单。"
                 : "老师已开启受监督喂养会话。请学生从名单中选择自己，完成后返回名单，由老师手动结束会话。"}
             </p>
           </div>
@@ -1166,6 +1194,7 @@
         ? app.ui.supervisedFeedReAdoptDraftTypeId
         : null;
     const selectedReAdoptType = reAdoptDraftTypeId ? getPetType(reAdoptDraftTypeId) : null;
+    const inventoryEntries = getStudentFoodInventoryEntries(selectedStudent.id);
     const reAdoptSection = reAdoptStatus.available
       ? `
         <section class="section">
@@ -1180,7 +1209,7 @@
               const isSelected = type.id === reAdoptDraftTypeId;
               return `
                 <article class="card supervised-feed-type-card${isCurrent ? " is-current" : ""}${isSelected ? " is-selected" : ""}">
-                  <img src="${type.icon}" alt="${escapeHtml(type.name)}" />
+                  <img src="${getPetTypePreviewIcon(type.id)}" alt="${escapeHtml(type.name)}" />
                   <h3>${escapeHtml(type.name)}</h3>
                   <p>${isCurrent ? "这是你当前的宠物" : "可以改为这个宠物类型"}</p>
                   <button
@@ -1259,31 +1288,68 @@
 
       <section class="section">
         <div class="section-header">
-          <h2>选择食物</h2>
-          <span class="pill">${reAdoptStatus.available ? "可先重新领养，再继续喂养" : "可以连续喂养多次"}</span>
+          <h2>兑换食物</h2>
+          <span class="pill">${reAdoptStatus.available ? "建议先领养，再兑换食物" : "先兑换，再从背包喂养"}</span>
         </div>
+        <p class="notice">兑换后会进入你的长期食物背包。本次不喂也会保留，下次班会喂养还能继续使用。</p>
         <div class="grid cols-3">
           ${app.data.catalog
             .map((item) => {
               const disabled = (selectedStudent.points || 0) < item.pricePoints;
+              const ownedQuantity =
+                inventoryEntries.find((entry) => entry.catalogId === item.id)?.quantity || 0;
               return `
                 <div class="card supervised-feed-food-card">
                   <h3>${escapeHtml(item.name)}</h3>
                   <p>价格：${item.pricePoints} 积分</p>
                   <p>效果：${formatEffects(item.effects)}</p>
+                  <p>背包已有：${ownedQuantity} 份</p>
                   <button
                     class="${disabled ? "ghost" : "accent"}"
-                    data-action="supervised-feed"
+                    data-action="buy-food"
                     data-id="${item.id}"
                     ${disabled ? "disabled" : ""}
                   >
-                    ${disabled ? "积分不足" : "喂食"}
+                    ${disabled ? "积分不足" : "兑换 1 份"}
                   </button>
                 </div>
               `;
             })
             .join("")}
         </div>
+      </section>
+
+      <section class="section">
+        <div class="section-header">
+          <h2>我的食物背包</h2>
+          <span class="pill">长期库存</span>
+        </div>
+        <p class="notice">从背包里选择要喂的食物，每次喂食会消耗 1 份库存，并真正改变宠物状态。</p>
+        ${inventoryEntries.length
+          ? `
+            <div class="grid cols-3 supervised-feed-inventory-grid">
+              ${inventoryEntries
+                .map((entry) => {
+                  const item = entry.item;
+                  return `
+                    <div class="card supervised-feed-food-card supervised-feed-inventory-card">
+                      <h3>${escapeHtml(item.name)}</h3>
+                      <p>库存：${entry.quantity} 份</p>
+                      <p>效果：${formatEffects(item.effects)}</p>
+                      <button
+                        class="accent"
+                        data-action="supervised-feed"
+                        data-id="${item.id}"
+                      >
+                        喂食 1 份
+                      </button>
+                    </div>
+                  `;
+                })
+                .join("")}
+            </div>
+          `
+          : `<p class="notice">背包还是空的，先去上方兑换食物。</p>`}
       </section>
     `;
   }
@@ -1300,6 +1366,10 @@
     const students = focus.students;
     const hasFocus = focus.hasFocus;
     const focusMotionClass = hasFocus && app.ui.displayMotion ? ` display-focus-card-${app.ui.displayMotion}` : "";
+    const activeInteraction = getActiveDisplayInteraction(focus);
+    const interactionVisualClass = activeInteraction
+      ? ` is-interacting is-${activeInteraction.type}`
+      : "";
     const focusHtml = hasFocus
       ? `
         <div class="modal-overlay display-focus-overlay" data-action="close-display-modal">
@@ -1316,7 +1386,10 @@
                   <span class="badge">单人聚焦</span>
                   <span class="pill">宠物 ${escapeHtml(getPetTypeName(focus.pet))}</span>
                 </div>
-                <div class="display-focus-visual">
+                <div class="display-focus-visual${interactionVisualClass}" data-display-interaction-visual>
+                  <div class="display-focus-reaction-slot" data-display-interaction-bubble>
+                    ${renderDisplayInteractionBubble(activeInteraction)}
+                  </div>
                   <img src="${getPetIcon(focus.pet)}" alt="${escapeHtml(focus.student.name)}的宠物" />
                   <div class="badge">等级 ${focus.pet.level}</div>
                 </div>
@@ -1344,14 +1417,28 @@
                 </div>
                 <div class="display-focus-interaction">
                   <div class="display-focus-interaction-head">
-                    <h3>互动区（即将开放）</h3>
-                    <span class="pill">首版仅展示</span>
+                    <h3>互动区</h3>
+                    <span class="pill">只读互动</span>
                   </div>
-                  <p>这里会承载课堂展示时学生与宠物的即时互动反馈。</p>
-                  <div class="display-focus-placeholder-actions">
-                    <button class="ghost" type="button" disabled>喂一口</button>
-                    <button class="ghost" type="button" disabled>打招呼</button>
-                    <button class="ghost" type="button" disabled>鼓励一下</button>
+                  <p>这里的互动不会修改积分或宠物数值，只用于课堂展示时的即时反馈。</p>
+                  <div class="display-focus-interaction-actions">
+                    <button
+                      class="${getDisplayInteractionButtonClass("greet", activeInteraction)}"
+                      type="button"
+                      data-action="display-greet"
+                    >
+                      打招呼
+                    </button>
+                    <button
+                      class="${getDisplayInteractionButtonClass("encourage", activeInteraction)}"
+                      type="button"
+                      data-action="display-encourage"
+                    >
+                      鼓励一下
+                    </button>
+                  </div>
+                  <div class="display-focus-interaction-status" data-display-interaction-feedback>
+                    ${renderDisplayInteractionFeedback(activeInteraction)}
                   </div>
                 </div>
               </section>
@@ -1369,10 +1456,35 @@
         </div>
       `
       : "";
+    const renderDisplayHeader = ({ badgeText, countText, showSearch = true }) => `
+      <div class="display-header">
+        <div class="display-header-back">
+          <button class="ghost" data-action="go-home">返回主页</button>
+          <div class="badge">${badgeText}</div>
+        </div>
+        ${showSearch ? `
+          <div class="display-header-search">
+            <div class="display-search">
+              <span class="search-label">搜索</span>
+              <input id="displaySearch" placeholder="姓名 / 拼音 / ${SEAT_LABEL}" value="${escapeHtml(searchTerm)}" />
+              <button class="ghost small" data-action="clear-display-search">清除</button>
+            </div>
+          </div>
+        ` : ""}
+        <div class="display-header-meta">
+          <div class="pill">${countText}</div>
+        </div>
+      </div>
+    `;
     if (!allStudents.length) {
       return `
         <section class="section display-stage" data-freeze="${app.ui.displayFreeze ? "true" : "false"}">
           <div class="display-board">
+            ${renderDisplayHeader({
+              badgeText: "展示模式",
+              countText: "共 0 名",
+              showSearch: false
+            })}
             <div class="display-card">
               <h2>暂无学生</h2>
               <p>请先在教师模式添加学生。</p>
@@ -1388,15 +1500,10 @@
       return `
         <section class="display-stage" data-freeze="${app.ui.displayFreeze ? "true" : "false"}">
           <div class="display-board">
-            <div class="display-header">
-              <div class="badge">展示模式 · 搜索结果</div>
-              <div class="display-search">
-                <span class="search-label">搜索</span>
-                <input id="displaySearch" placeholder="姓名 / 拼音 / ${SEAT_LABEL}" value="${escapeHtml(searchTerm)}" />
-                <button class="ghost small" data-action="clear-display-search">清除</button>
-              </div>
-              <div class="pill">共 0 名</div>
-            </div>
+            ${renderDisplayHeader({
+              badgeText: "展示模式 · 搜索结果",
+              countText: "共 0 名"
+            })}
             <div class="display-card compact">
               <h2>未找到匹配的学生</h2>
               <p>请尝试更短的姓名，或清除搜索条件。</p>
@@ -1461,15 +1568,10 @@
     return `
       <section class="display-stage${hasFocus ? " display-stage--focus-active" : ""}" data-freeze="${app.ui.displayFreeze ? "true" : "false"}">
         <div class="display-board" ${hasFocus ? 'aria-hidden="true"' : ""}>
-          <div class="display-header">
-            <div class="badge">展示模式 · 第 ${page + 1} / ${totalPages} 页</div>
-            <div class="display-search">
-              <span class="search-label">搜索</span>
-              <input id="displaySearch" placeholder="姓名 / 拼音 / ${SEAT_LABEL}" value="${escapeHtml(searchTerm)}" />
-              <button class="ghost small" data-action="clear-display-search">清除</button>
-            </div>
-            <div class="pill">共 ${students.length} 名${searchTerm ? "（已筛选）" : ""}</div>
-          </div>
+          ${renderDisplayHeader({
+            badgeText: `展示模式 · 第 ${page + 1} / ${totalPages} 页`,
+            countText: `共 ${students.length} 名${searchTerm ? "（已筛选）" : ""}`
+          })}
           <div class="display-grid">
             ${cardsHtml}
           </div>
@@ -1531,11 +1633,88 @@
     `;
   }
 
+  function renderSetupChecklist() {
+    if (app.data.students.length > 0) return "";
+
+    return `
+      <section class="section">
+        <div class="section-header">
+          <h2>首次使用 3 步</h2>
+          <span class="pill">先完成一次班级初始化</span>
+        </div>
+        <div class="grid cols-3">
+          <div class="card task-card">
+            <span class="badge">第 1 步</span>
+            <h3>导入学生名单</h3>
+            <p>推荐先从 CSV 导入，省去逐个录入的时间。</p>
+            <button class="primary" data-action="go-import">去导入</button>
+          </div>
+          <div class="card task-card">
+            <span class="badge">第 2 步</span>
+            <h3>检查学生列表</h3>
+            <p>确认姓名、座号/学号、分组都正确。</p>
+            <button class="ghost" data-action="go-students">查看学生</button>
+          </div>
+          <div class="card task-card">
+            <span class="badge">第 3 步</span>
+            <h3>开始课堂使用</h3>
+            <p>可以先在学生管理里给一位学生加分，再进入班会喂养模式体验首次重新领养与喂养。</p>
+            <div class="form-actions">
+              <button class="ghost" data-action="go-students">学生管理</button>
+              <button class="ghost" data-action="go-supervised-feed">班会喂养</button>
+            </div>
+          </div>
+        </div>
+      </section>
+    `;
+  }
+
+  function renderTeacherDashboard() {
+    const recentLedger = app.data.ledger.slice().sort((a, b) => b.timestamp - a.timestamp).slice(0, 8);
+    return `
+      ${renderBackupReminder()}
+      ${renderSetupChecklist()}
+      <section class="section">
+        <h2>教师仪表盘</h2>
+        <div class="grid cols-3">
+          <div class="card">
+            <span class="badge">学生数量</span>
+            <h3>${app.data.students.length}</h3>
+            <p>每位学生自动拥有一个宠物档案。</p>
+          </div>
+          <div class="card">
+            <span class="badge">流水记录</span>
+            <h3>${app.data.ledger.length}</h3>
+            <p>奖励/喂养等操作全部进入流水。</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <h2>快捷入口</h2>
+        <div class="form-actions">
+          <button class="primary" data-action="go-students">学生管理</button>
+          <button class="accent" data-action="go-supervised-feed">班会喂养</button>
+          <button class="ghost" data-action="go-import">导入导出</button>
+          <button class="ghost" data-action="go-settings">系统设置</button>
+        </div>
+      </section>
+
+      <section class="section">
+        <h2>最近流水</h2>
+        ${renderLedgerTable(recentLedger)}
+      </section>
+    `;
+  }
+
   Object.assign(CP.views, {
     setAuthError,
     isValidPin,
     getAuthErrorMessage,
     updateAuthError,
+    clearBulkQuickAwardDraft,
+    resetQuickAwardDrafts,
+    setBulkQuickAwardDraft,
     setView,
     setModeIndicator,
     logoutTeacher,
@@ -1550,6 +1729,9 @@
     openDisplayFocus,
     closeDisplayFocus,
     stepDisplayFocus,
+    clearDisplayInteraction,
+    syncDisplayInteractionDom,
+    triggerDisplayInteraction,
     shouldIgnoreDisplayHotkeyTarget,
     setDisplayMotion,
     getLastBackupText,
@@ -1563,7 +1745,6 @@
     renderTeacherLogin,
     renderTeacherDashboard,
     renderTeacherStudents,
-    renderTeacherRewards,
     renderTeacherStudentDetail,
     renderTeacherImport,
     renderTeacherSettings,

@@ -11,6 +11,7 @@
     normalizeData,
     syncData,
     getStudentById,
+    getCatalogItem,
     getPetByStudentId,
     getPetTypeName,
     isPetEligibleForReAdopt,
@@ -117,11 +118,6 @@
     return true;
   }
 
-  function awardPoints(studentId, points, reason, options = {}) {
-    const student = getStudentById(studentId);
-    return applyAward(student, points, reason, options);
-  }
-
   function rememberLastUndoBatch(batchId, studentIds, points, reason) {
     app.data.meta.lastUndoBatch = {
       batchId,
@@ -212,18 +208,71 @@
     return true;
   }
 
+  function buyFoodForStudent(studentId, catalogId) {
+    const student = getStudentById(studentId);
+    const item = getCatalogItem(catalogId);
+    if (!student || !item) return false;
+    if ((student.points || 0) < item.pricePoints) {
+      showToast("积分不足，无法兑换这份食物", "warning");
+      return false;
+    }
+
+    clearLastUndoBatch();
+    student.points -= item.pricePoints;
+    const nextInventory = Array.isArray(student.foodInventory) ? [...student.foodInventory] : [];
+    const inventoryIndex = nextInventory.findIndex((entry) => entry.catalogId === item.id);
+    if (inventoryIndex >= 0) {
+      nextInventory[inventoryIndex] = {
+        ...nextInventory[inventoryIndex],
+        quantity: (Number(nextInventory[inventoryIndex].quantity) || 0) + 1
+      };
+    } else {
+      nextInventory.push({
+        catalogId: item.id,
+        quantity: 1
+      });
+    }
+    student.foodInventory = nextInventory;
+
+    addLedgerEntry({
+      timestamp: Date.now(),
+      studentId: student.id,
+      type: "buy_food",
+      deltaPoints: -item.pricePoints,
+      reason: `兑换食物：${item.name}`
+    });
+
+    saveData();
+    showToast(`已兑换 1 份${item.name}，可到背包中喂给宠物`, "info");
+    return true;
+  }
+
   function feedStudent(studentId, catalogId) {
     const student = getStudentById(studentId);
     const pet = getPetByStudentId(studentId);
-    const item = app.data.catalog.find((food) => food.id === catalogId);
-    if (!student || !pet || !item) return;
-    if ((student.points || 0) < item.pricePoints) {
-      showToast("积分不足，无法喂养", "warning");
-      return;
+    const item = getCatalogItem(catalogId);
+    if (!student || !pet || !item) return false;
+
+    const nextInventory = Array.isArray(student.foodInventory) ? [...student.foodInventory] : [];
+    const inventoryIndex = nextInventory.findIndex((entry) => entry.catalogId === item.id);
+    const currentQuantity = inventoryIndex >= 0 ? Number(nextInventory[inventoryIndex].quantity) || 0 : 0;
+    if (currentQuantity <= 0) {
+      showToast("背包里还没有这份食物，请先兑换", "warning");
+      return false;
     }
+
     clearLastUndoBatch();
+    if (currentQuantity === 1) {
+      nextInventory.splice(inventoryIndex, 1);
+    } else {
+      nextInventory[inventoryIndex] = {
+        ...nextInventory[inventoryIndex],
+        quantity: currentQuantity - 1
+      };
+    }
+    student.foodInventory = nextInventory;
+
     const hungerEffect = Number(item.effects.hunger || 0);
-    student.points -= item.pricePoints;
     pet.hunger = clamp(pet.hunger - hungerEffect, 0, 100);
     pet.mood = clamp(pet.mood + (item.effects.mood || 0), 0, 100);
     pet.xp += item.effects.xp || 0;
@@ -237,7 +286,6 @@
       timestamp: Date.now(),
       studentId: student.id,
       type: "feed",
-      deltaPoints: -item.pricePoints,
       deltaHunger: -hungerEffect,
       deltaMood: item.effects.mood || 0,
       deltaXp: item.effects.xp || 0,
@@ -246,6 +294,7 @@
 
     saveData();
     showToast(leveledUp ? "喂养成功，宠物升级！" : "喂养成功", "info");
+    return true;
   }
 
   function reAdoptPetForStudent(studentId, targetPetTypeId) {
@@ -395,7 +444,8 @@
         name,
         group,
         alias: sanitizeAlias(alias) || generateAlias(name),
-        points: 0
+        points: 0,
+        foodInventory: []
       });
     }
 
@@ -442,10 +492,10 @@
     isStoredTeacherPinHashValid,
     getTeacherPinState,
     applyAward,
-    awardPoints,
     rememberLastUndoBatch,
     bulkAwardStudents,
     undoLastBulkAward,
+    buyFoodForStudent,
     feedStudent,
     reAdoptPetForStudent,
     validateImport,
