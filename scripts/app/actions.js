@@ -1,9 +1,15 @@
 (function (window) {
   const CP = window.ClassroomPetApp;
   const { constants, state, utils, model, views } = CP;
-  const { RECOVERY_CODE, SEAT_LABEL, DEFAULT_DATA, PET_TYPES } = constants;
+  const {
+    SEAT_LABEL,
+    PET_TYPES,
+    AWARD_REVOCATION_WINDOW,
+    FEEDBACK_MAX_LENGTH,
+    FEEDBACK_STORAGE_LIMIT
+  } = constants;
   const { app } = state;
-  const { clone, makeId, clamp, showToast } = utils;
+  const { makeId, clamp, showToast } = utils;
   const {
     saveData,
     sanitizeAlias,
@@ -16,8 +22,11 @@
     getPetTypeName,
     isPetEligibleForReAdopt,
     getPetReAdoptStatus,
-    clearLastUndoBatch,
     addLedgerEntry,
+    addAwardBatch,
+    getAwardBatchById,
+    getAwardBatchStatus,
+    getFeedbackEntries,
     setBulkSelectedStudentIds,
     clearBulkSelection,
     computeLevel
@@ -58,6 +67,33 @@
     return true;
   }
 
+  function submitFeedback(message) {
+    const normalizedMessage = String(message || "").trim();
+    if (!normalizedMessage) {
+      showToast("请先填写反馈内容", "warning");
+      return false;
+    }
+    if (normalizedMessage.length > FEEDBACK_MAX_LENGTH) {
+      showToast(`反馈内容不能超过 ${FEEDBACK_MAX_LENGTH} 个字`, "warning");
+      return false;
+    }
+
+    const nextEntry = {
+      id: makeId("feedback"),
+      message: normalizedMessage,
+      createdAt: Date.now(),
+      source: "teacher"
+    };
+
+    app.data.meta = {
+      ...(app.data.meta || {})
+    };
+    app.data.meta.feedbackEntries = [nextEntry, ...getFeedbackEntries()].slice(0, FEEDBACK_STORAGE_LIMIT);
+    saveData();
+    showToast("反馈已保存到当前设备", "info");
+    return true;
+  }
+
   async function hashPin(pin) {
     if (window.crypto && window.crypto.subtle) {
       const data = new TextEncoder().encode(pin);
@@ -85,46 +121,17 @@
     return isStoredTeacherPinHashValid(teacherPinHash) ? "valid" : "corrupt";
   }
 
-  function applyAward(student, points, reason, options = {}) {
-    if (!student) return false;
-    const delta = Number(points);
-    if (!Number.isFinite(delta) || delta <= 0) {
-      if (!options.silent) {
-        showToast("请输入有效的加分数值", "warning");
-      }
-      return false;
-    }
-
-    if (options.invalidateUndo !== false) {
-      clearLastUndoBatch();
-    }
-
-    student.points = (student.points || 0) + delta;
-    addLedgerEntry({
-      timestamp: Date.now(),
-      studentId: student.id,
-      type: "award",
-      deltaPoints: delta,
-      reason,
-      batchId: options.batchId
-    });
-
-    if (options.save !== false) {
-      saveData();
-    }
-    if (!options.silent) {
-      showToast("加分成功", "info");
-    }
-    return true;
-  }
-
-  function rememberLastUndoBatch(batchId, studentIds, points, reason) {
-    app.data.meta.lastUndoBatch = {
-      batchId,
+  function createAwardBatchRecord(studentIds, points, reason) {
+    const now = Date.now();
+    return {
+      id: makeId("award-batch"),
       studentIds: [...studentIds],
-      deltaPoints: points,
-      reason,
-      createdAt: Date.now()
+      points,
+      reason: String(reason || "加分").trim() || "加分",
+      createdAt: now,
+      revocableUntil: now + AWARD_REVOCATION_WINDOW,
+      revokedAt: null,
+      revokeReason: ""
     };
   }
 
@@ -136,7 +143,7 @@
       return false;
     }
     if (!Number.isFinite(delta) || delta <= 0 || !Number.isInteger(delta)) {
-      showToast("批量加分数值需为正整数", "warning");
+      showToast("加分数值需为正整数", "warning");
       return false;
     }
 
@@ -147,64 +154,75 @@
       return false;
     }
 
-    const batchId = makeId("batch");
+    const batch = addAwardBatch(createAwardBatchRecord(ids, delta, reason));
+    if (!batch) {
+      showToast("创建加分批次失败，请稍后重试", "danger");
+      return false;
+    }
+
     students.forEach((student) => {
-      applyAward(student, delta, reason, {
-        batchId,
-        invalidateUndo: false,
-        save: false,
-        silent: true
+      student.points = (student.points || 0) + delta;
+      addLedgerEntry({
+        timestamp: batch.createdAt,
+        studentId: student.id,
+        type: "award",
+        deltaPoints: delta,
+        reason: batch.reason,
+        batchId: batch.id
       });
     });
-    rememberLastUndoBatch(batchId, ids, delta, reason);
+
     saveData();
     clearBulkSelection({ clearDrafts: true });
     showToast(`已为 ${students.length} 名学生各加 ${delta} 分`, "info");
     return true;
   }
 
-  function undoLastBulkAward() {
-    const batch = app.data.meta.lastUndoBatch;
+  function revokeAwardBatch(batchId) {
+    const batch = getAwardBatchById(batchId);
     if (!batch) {
-      showToast("没有可撤销的批量操作", "warning");
+      showToast("未找到对应的加分批次", "warning");
       return false;
     }
 
-    const students = batch.studentIds.map((id) => getStudentById(id));
-    const entries = app.data.ledger.filter(
-      (entry) => entry.batchId === batch.batchId && entry.type === "award"
-    );
-
-    const matchedEntries = batch.studentIds.map((studentId) =>
-      entries.find(
-        (entry) =>
-          entry.studentId === studentId &&
-          entry.deltaPoints === batch.deltaPoints &&
-          entry.reason === batch.reason
-      )
-    );
-
-    const invalidState =
-      entries.length !== batch.studentIds.length ||
-      students.some((student) => !student || (student.points || 0) < batch.deltaPoints) ||
-      matchedEntries.some((entry) => !entry) ||
-      matchedEntries.length !== batch.studentIds.length;
-
-    if (invalidState) {
-      clearLastUndoBatch({ save: true });
-      showToast("最近一次批量操作已无法撤销", "warning");
+    const status = getAwardBatchStatus(batch);
+    if (status.code === "revoked") {
+      showToast("该加分批次已撤销", "warning");
       return false;
     }
+    if (status.code === "expired") {
+      showToast("该加分批次已过期，不能再撤销", "warning");
+      return false;
+    }
+    if (status.code === "missing_student") {
+      showToast("该加分批次涉及的学生已删除，不能撤销", "warning");
+      return false;
+    }
+    if (status.code === "insufficient_points") {
+      showToast("学生当前积分不足，暂时不能撤销这笔加分", "warning");
+      return false;
+    }
+
+    const students = batch.studentIds.map((studentId) => getStudentById(studentId));
+    const now = Date.now();
+    const revokeReason = "教师撤销加分";
 
     students.forEach((student) => {
-      student.points -= batch.deltaPoints;
+      student.points -= batch.points;
+      addLedgerEntry({
+        timestamp: now,
+        studentId: student.id,
+        type: "award_revoke",
+        deltaPoints: -batch.points,
+        reason: revokeReason,
+        batchId: batch.id
+      });
     });
 
-    const removeIds = new Set(matchedEntries.map((entry) => entry.id));
-    app.data.ledger = app.data.ledger.filter((entry) => !removeIds.has(entry.id));
-    clearLastUndoBatch();
+    batch.revokedAt = now;
+    batch.revokeReason = revokeReason;
     saveData();
-    showToast(`已撤销最近一次批量加分（${batch.studentIds.length} 名）`, "info");
+    showToast(`已撤销 ${students.length} 名学生的加分批次`, "info");
     return true;
   }
 
@@ -217,7 +235,6 @@
       return false;
     }
 
-    clearLastUndoBatch();
     student.points -= item.pricePoints;
     const nextInventory = Array.isArray(student.foodInventory) ? [...student.foodInventory] : [];
     const inventoryIndex = nextInventory.findIndex((entry) => entry.catalogId === item.id);
@@ -261,7 +278,6 @@
       return false;
     }
 
-    clearLastUndoBatch();
     if (currentQuantity === 1) {
       nextInventory.splice(inventoryIndex, 1);
     } else {
@@ -324,7 +340,6 @@
       return false;
     }
 
-    clearLastUndoBatch();
     const now = Date.now();
     pet.petType = targetPetTypeId;
     pet.reAdoptAvailable = false;
@@ -354,6 +369,7 @@
     if (!Array.isArray(data.students)) errors.push("缺少 students 列表");
     if (!Array.isArray(data.pets)) errors.push("缺少 pets 列表");
     if (!Array.isArray(data.ledger)) errors.push("缺少 ledger 列表");
+    if ("awardBatches" in data && !Array.isArray(data.awardBatches)) errors.push("awardBatches 必须是数组");
     if (!data.config || typeof data.config !== "object") errors.push("缺少 config");
     if (data.config && typeof data.config === "object") {
       const teacherPinHash = typeof data.config.teacherPinHash === "string" ? data.config.teacherPinHash.trim() : "";
@@ -376,7 +392,6 @@
           return;
         }
         app.data = normalizeData(parsed);
-        app.data.meta.lastUndoBatch = null;
         syncData();
         app.ui.studentSelectedId = null;
         app.ui.editingStudentId = null;
@@ -467,7 +482,7 @@
       }
       if (
         !confirmWithAutoBackup(
-          "导入学生名单会覆盖现有学生、宠物与流水。系统会先自动下载一份备份文件，再继续导入。是否继续？",
+          "导入学生名单会覆盖现有学生、宠物、流水和加分批次。系统会先自动下载一份备份文件，再继续导入。是否继续？",
           "pre-csv-import"
         )
       ) {
@@ -476,7 +491,7 @@
       app.data.students = students;
       app.data.pets = [];
       app.data.ledger = [];
-      app.data.meta.lastUndoBatch = null;
+      app.data.awardBatches = [];
       syncData();
       clearBulkSelection({ clearDrafts: true });
       showToast("学生名单导入成功", "info");
@@ -488,13 +503,12 @@
   Object.assign(CP.actions, {
     exportData,
     confirmWithAutoBackup,
+    submitFeedback,
     hashPin,
     isStoredTeacherPinHashValid,
     getTeacherPinState,
-    applyAward,
-    rememberLastUndoBatch,
     bulkAwardStudents,
-    undoLastBulkAward,
+    revokeAwardBatch,
     buyFoodForStudent,
     feedStudent,
     reAdoptPetForStudent,

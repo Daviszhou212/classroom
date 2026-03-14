@@ -703,6 +703,74 @@ label {
   border: 1px solid rgba(255, 255, 255, 0.7);
 }
 
+.feedback-modal {
+  width: min(760px, 94vw);
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+}
+
+.feedback-modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.feedback-modal-copy {
+  display: grid;
+  gap: 10px;
+}
+
+.feedback-modal-copy h2,
+.feedback-history h3 {
+  margin: 0;
+}
+
+.feedback-modal-copy p {
+  margin: 0;
+  color: var(--ink-2);
+}
+
+.feedback-form,
+.feedback-history {
+  display: grid;
+  gap: 14px;
+}
+
+.feedback-entry-list {
+  display: grid;
+  gap: 12px;
+}
+
+.feedback-entry-card {
+  padding: 16px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.94);
+  display: grid;
+  gap: 10px;
+}
+
+.feedback-entry-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.feedback-entry-head time {
+  color: var(--ink-2);
+  font-size: 0.95rem;
+}
+
+.feedback-entry-card p {
+  margin: 0;
+  color: var(--ink-1);
+  line-height: 1.6;
+}
+
 .notice {
   padding: 10px 14px;
   border-radius: var(--radius-sm);
@@ -764,6 +832,47 @@ label {
 .undo-banner p {
   margin: 0;
   color: var(--ink-2);
+}
+
+.award-batch-grid {
+  align-items: stretch;
+}
+
+.award-batch-card {
+  display: grid;
+  gap: 10px;
+}
+
+.award-batch-card h3 {
+  margin: 0;
+}
+
+.award-batch-card p {
+  margin: 0;
+}
+
+.award-batch-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.award-batch-card.is-revocable {
+  border-color: rgba(15, 118, 110, 0.28);
+  background: linear-gradient(180deg, rgba(240, 253, 250, 0.98), rgba(255, 255, 255, 0.96));
+}
+
+.award-batch-card.is-insufficient {
+  border-color: rgba(234, 88, 12, 0.28);
+  background: linear-gradient(180deg, rgba(255, 247, 237, 0.98), rgba(255, 255, 255, 0.96));
+}
+
+.award-batch-card.is-missing,
+.award-batch-card.is-expired {
+  border-color: rgba(148, 163, 184, 0.3);
+  background: linear-gradient(180deg, rgba(248, 250, 252, 0.98), rgba(255, 255, 255, 0.96));
 }
 
 .pill-list {
@@ -1524,6 +1633,10 @@ body.display-mode .mode-indicator {
     padding: 22px;
   }
 
+  .feedback-modal {
+    max-height: calc(100vh - 32px);
+  }
+
   .display-focus-shell {
     grid-template-columns: 1fr;
   }
@@ -1583,6 +1696,14 @@ body.display-mode .mode-indicator {
 
   .display-focus-card {
     padding: 18px;
+  }
+
+  .feedback-modal .form-actions {
+    width: 100%;
+  }
+
+  .feedback-modal .form-actions button {
+    flex: 1 1 140px;
   }
 
   .display-focus-interaction-actions,

@@ -13,7 +13,6 @@
     getPetByStudentId,
     getSortedStudents,
     getDisplayStudents,
-    clearLastUndoBatch,
     getBulkSelectedStudentIds,
     setBulkSelectedStudentIds,
     toggleBulkSelectedStudent,
@@ -49,7 +48,8 @@
     hashPin,
     getTeacherPinState,
     bulkAwardStudents,
-    undoLastBulkAward,
+    revokeAwardBatch,
+    submitFeedback,
     buyFoodForStudent,
     feedStudent,
     reAdoptPetForStudent,
@@ -109,6 +109,14 @@
             return;
           }
           setView("teacher-settings");
+          break;
+        case "open-feedback-modal":
+          if (!app.auth.teacher) {
+            setView("teacher-dashboard");
+            return;
+          }
+          app.ui.feedbackModalOpen = true;
+          render();
           break;
         case "go-student":
           setView("student-view");
@@ -172,8 +180,8 @@
           render();
           break;
         }
-        case "undo-last-bulk-award":
-          undoLastBulkAward();
+        case "revoke-award-batch":
+          revokeAwardBatch(actionEl.dataset.id);
           render();
           break;
         case "edit-student":
@@ -190,10 +198,8 @@
             ? `${student.name}（${SEAT_LABEL} ${student.seatNo}）`
             : "该学生";
           if (!confirm(`确认删除 ${studentLabel} 及其宠物档案吗？`)) return;
-          clearLastUndoBatch();
           app.data.students = app.data.students.filter((item) => item.id !== actionEl.dataset.id);
           app.data.pets = app.data.pets.filter((pet) => pet.studentId !== actionEl.dataset.id);
-          app.data.ledger = app.data.ledger.filter((entry) => entry.studentId !== actionEl.dataset.id);
           setBulkSelectedStudentIds(getBulkSelectedStudentIds().filter((id) => id !== actionEl.dataset.id));
           if (!getBulkSelectedStudentIds().length) {
             clearBulkQuickAwardDraft();
@@ -253,6 +259,10 @@
         case "close-display-modal":
           closeDisplayFocus();
           break;
+        case "close-feedback-modal":
+          app.ui.feedbackModalOpen = false;
+          render();
+          break;
         case "display-prev-student":
           stepDisplayFocus(-1);
           break;
@@ -300,7 +310,9 @@
             supervisedFeedSessionActive: false,
             supervisedFeedStudentId: null,
             supervisedFeedVisitedStudentIds: [],
-            supervisedFeedReAdoptDraftTypeId: null
+            supervisedFeedReAdoptDraftTypeId: null,
+            feedbackModalOpen: false,
+            feedbackDraft: ""
           };
           app.auth.teacher = false;
           sessionStorage.removeItem("teacherAuthed");
@@ -336,6 +348,13 @@
     });
 
     document.addEventListener("keydown", (event) => {
+      if (app.ui.feedbackModalOpen && event.key === "Escape") {
+        event.preventDefault();
+        app.ui.feedbackModalOpen = false;
+        render();
+        return;
+      }
+
       const actionEl =
         event.target && typeof event.target.closest === "function"
           ? event.target.closest('[data-action="open-display-modal"]')
@@ -377,6 +396,26 @@
       event.preventDefault();
 
       switch (form.dataset.action) {
+        case "submit-feedback": {
+          if (!app.auth.teacher) {
+            setView("teacher-dashboard");
+            return;
+          }
+          const message = form.feedbackMessage.value;
+          const success = submitFeedback(message);
+          if (!success) {
+            app.ui.feedbackDraft = String(message || "");
+            return;
+          }
+          app.ui.feedbackDraft = "";
+          app.ui.feedbackModalOpen = true;
+          render();
+          requestAnimationFrame(() => {
+            const feedbackInput = document.getElementById("feedbackMessage");
+            if (feedbackInput) feedbackInput.focus();
+          });
+          break;
+        }
         case "set-pin": {
           const pin = form.pin.value.trim();
           if (!updateAuthError(form, { strict: true })) {
@@ -496,7 +535,6 @@
           if (studentId) {
             const student = getStudentById(studentId);
             if (student) {
-              clearLastUndoBatch();
               const oldName = student.name;
               student.name = name;
               student.seatNo = seatNo;
@@ -510,7 +548,6 @@
             app.ui.editingStudentId = null;
             showToast("学生信息已更新", "info");
           } else {
-            clearLastUndoBatch();
             const newStudent = {
               id: utils.makeId("student"),
               name,
@@ -613,6 +650,9 @@
         app.ui.displaySearch = event.target.value;
         app.ui.displayPage = 0;
         preserveInputFocus("displaySearch", render);
+      }
+      if (event.target.id === "feedbackMessage") {
+        app.ui.feedbackDraft = event.target.value;
       }
     });
 

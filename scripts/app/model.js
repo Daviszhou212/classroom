@@ -1,7 +1,13 @@
 (function (window) {
   const CP = window.ClassroomPetApp;
   const { constants, state, utils } = CP;
-  const { STORAGE_KEY, DEFAULT_DATA, PET_TYPES } = constants;
+  const {
+    STORAGE_KEY,
+    DEFAULT_DATA,
+    PET_TYPES,
+    AWARD_REVOCATION_WINDOW,
+    FEEDBACK_STORAGE_LIMIT
+  } = constants;
   const { app } = state;
   const { clone, makeId, formatTime } = utils;
 
@@ -91,6 +97,182 @@
     return normalizedStudent;
   }
 
+  function normalizeFeedbackEntry(entry) {
+    if (!entry || typeof entry !== "object") {
+      return null;
+    }
+
+    const message = String(entry.message || "").trim();
+    const createdAt = Number(entry.createdAt) || 0;
+    if (!message || !createdAt) {
+      return null;
+    }
+
+    return {
+      id: typeof entry.id === "string" && entry.id.trim() ? entry.id.trim() : makeId("feedback"),
+      message,
+      createdAt,
+      source: "teacher"
+    };
+  }
+
+  function normalizeFeedbackEntries(entries) {
+    const seenIds = new Set();
+
+    return (Array.isArray(entries) ? entries : [])
+      .map((entry) => normalizeFeedbackEntry(entry))
+      .filter((entry) => {
+        if (!entry || seenIds.has(entry.id)) {
+          return false;
+        }
+        seenIds.add(entry.id);
+        return true;
+      })
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .slice(0, FEEDBACK_STORAGE_LIMIT);
+  }
+
+  function normalizeLedgerEntry(entry) {
+    const normalizedEntry = {
+      ...entry
+    };
+    normalizedEntry.timestamp = Number(normalizedEntry.timestamp) || Date.now();
+    if (typeof normalizedEntry.batchId === "string") {
+      normalizedEntry.batchId = normalizedEntry.batchId.trim();
+    }
+    if (!normalizedEntry.batchId) {
+      delete normalizedEntry.batchId;
+    }
+    return normalizedEntry;
+  }
+
+  function normalizeAwardBatch(batch) {
+    if (!batch || typeof batch !== "object") {
+      return null;
+    }
+
+    const id = typeof batch.id === "string" ? batch.id.trim() : "";
+    const studentIds = Array.isArray(batch.studentIds)
+      ? [...new Set(batch.studentIds.map((studentId) => String(studentId || "").trim()).filter(Boolean))]
+      : [];
+    const points = Math.floor(Number(batch.points) || 0);
+    const createdAt = Number(batch.createdAt) || 0;
+    const rawRevocableUntil = Number(batch.revocableUntil) || 0;
+
+    if (!id || !studentIds.length || points <= 0 || !createdAt) {
+      return null;
+    }
+
+    return {
+      id,
+      studentIds,
+      points,
+      reason: String(batch.reason || "加分").trim() || "加分",
+      createdAt,
+      revocableUntil: rawRevocableUntil >= createdAt ? rawRevocableUntil : createdAt + AWARD_REVOCATION_WINDOW,
+      revokedAt: Number.isFinite(Number(batch.revokedAt)) ? Number(batch.revokedAt) : null,
+      revokeReason: String(batch.revokeReason || "").trim()
+    };
+  }
+
+  function createAwardBatchFromLedgerEntries(entries) {
+    if (!Array.isArray(entries) || !entries.length) {
+      return [];
+    }
+
+    const firstEntry = entries[0];
+    const points = Math.floor(Number(firstEntry.deltaPoints) || 0);
+    const reason = String(firstEntry.reason || "加分").trim() || "加分";
+    const createdAt = entries.reduce(
+      (earliest, entry) => Math.min(earliest, Number(entry.timestamp) || Number.MAX_SAFE_INTEGER),
+      Number.MAX_SAFE_INTEGER
+    );
+    const studentIds = [...new Set(entries.map((entry) => String(entry.studentId || "").trim()).filter(Boolean))];
+    const samePoints = entries.every((entry) => Math.floor(Number(entry.deltaPoints) || 0) === points);
+    const sameReason = entries.every((entry) => (String(entry.reason || "加分").trim() || "加分") === reason);
+
+    if (!studentIds.length || points <= 0 || !createdAt) {
+      return [];
+    }
+
+    if (!samePoints || !sameReason) {
+      return entries.flatMap((entry) => {
+        const entryStudentId = String(entry.studentId || "").trim();
+        const entryPoints = Math.floor(Number(entry.deltaPoints) || 0);
+        const entryCreatedAt = Number(entry.timestamp) || 0;
+        if (!entryStudentId || entryPoints <= 0 || !entryCreatedAt) {
+          return [];
+        }
+        return [{
+          id: entry.batchId || entry.id || makeId("award-batch"),
+          studentIds: [entryStudentId],
+          points: entryPoints,
+          reason: String(entry.reason || "加分").trim() || "加分",
+          createdAt: entryCreatedAt,
+          revocableUntil: entryCreatedAt + AWARD_REVOCATION_WINDOW,
+          revokedAt: null,
+          revokeReason: ""
+        }];
+      });
+    }
+
+    return [{
+      id: firstEntry.batchId || firstEntry.id || makeId("award-batch"),
+      studentIds,
+      points,
+      reason,
+      createdAt,
+      revocableUntil: createdAt + AWARD_REVOCATION_WINDOW,
+      revokedAt: null,
+      revokeReason: ""
+    }];
+  }
+
+  function buildAwardBatchesFromLedger(ledger) {
+    const now = Date.now();
+    const windowStart = now - AWARD_REVOCATION_WINDOW;
+    const recentAwardEntries = (Array.isArray(ledger) ? ledger : [])
+      .map((entry) => normalizeLedgerEntry(entry))
+      .filter(
+        (entry) =>
+          entry.type === "award" &&
+          Number(entry.deltaPoints) > 0 &&
+          Number(entry.timestamp) >= windowStart
+      );
+    const groupedEntries = new Map();
+
+    recentAwardEntries.forEach((entry) => {
+      const groupKey = entry.batchId || entry.id;
+      if (!groupKey) return;
+      if (!groupedEntries.has(groupKey)) {
+        groupedEntries.set(groupKey, []);
+      }
+      groupedEntries.get(groupKey).push(entry);
+    });
+
+    const batches = [];
+    groupedEntries.forEach((entries) => {
+      batches.push(...createAwardBatchFromLedgerEntries(entries));
+    });
+
+    return normalizeAwardBatches(batches);
+  }
+
+  function normalizeAwardBatches(batches) {
+    const seenIds = new Set();
+
+    return (Array.isArray(batches) ? batches : [])
+      .map((batch) => normalizeAwardBatch(batch))
+      .filter((batch) => {
+        if (!batch || seenIds.has(batch.id)) {
+          return false;
+        }
+        seenIds.add(batch.id);
+        return true;
+      })
+      .sort((a, b) => b.createdAt - a.createdAt);
+  }
+
   function normalizeData(data) {
     const normalized = clone(DEFAULT_DATA);
     normalized.schemaVersion =
@@ -100,6 +282,7 @@
     normalized.students = Array.isArray(data.students) ? data.students : [];
     normalized.pets = Array.isArray(data.pets) ? data.pets : [];
     normalized.ledger = Array.isArray(data.ledger) ? data.ledger : [];
+    normalized.awardBatches = Array.isArray(data.awardBatches) ? data.awardBatches : [];
     normalized.catalog =
       Array.isArray(data.catalog) && data.catalog.length > 0
         ? data.catalog
@@ -116,25 +299,14 @@
       ...DEFAULT_DATA.meta,
       ...(data.meta || {})
     };
-
-    const undoBatch = normalized.meta.lastUndoBatch;
-    if (
-      !undoBatch ||
-      typeof undoBatch !== "object" ||
-      typeof undoBatch.batchId !== "string" ||
-      !Array.isArray(undoBatch.studentIds) ||
-      typeof undoBatch.deltaPoints !== "number" ||
-      typeof undoBatch.reason !== "string" ||
-      typeof undoBatch.createdAt !== "number"
-    ) {
-      normalized.meta.lastUndoBatch = null;
-    }
+    normalized.meta.feedbackEntries = normalizeFeedbackEntries(normalized.meta.feedbackEntries);
 
     normalized.students = normalized.students.map((student) => normalizeStudent(student, normalized.catalog));
-    normalized.ledger = normalized.ledger.map((entry) => ({
-      ...entry,
-      batchId: typeof entry.batchId === "string" ? entry.batchId : undefined
-    }));
+    normalized.ledger = normalized.ledger.map((entry) => normalizeLedgerEntry(entry));
+    normalized.awardBatches = Array.isArray(data.awardBatches)
+      ? normalizeAwardBatches(data.awardBatches)
+      : buildAwardBatchesFromLedger(normalized.ledger);
+
     const feedHistoryStudentIds = new Set(
       normalized.ledger.filter((entry) => entry.type === "feed" && entry.studentId).map((entry) => entry.studentId)
     );
@@ -156,6 +328,13 @@
 
   function syncData() {
     app.data.students = app.data.students.map((student) => normalizeStudent(student, app.data.catalog));
+    app.data.ledger = app.data.ledger.map((entry) => normalizeLedgerEntry(entry));
+    app.data.awardBatches = normalizeAwardBatches(app.data.awardBatches);
+    app.data.meta = {
+      ...DEFAULT_DATA.meta,
+      ...(app.data.meta || {})
+    };
+    app.data.meta.feedbackEntries = normalizeFeedbackEntries(app.data.meta.feedbackEntries);
     const studentIds = new Set(app.data.students.map((student) => student.id));
     app.data.pets = app.data.pets.filter((pet) => studentIds.has(pet.studentId));
 
@@ -164,6 +343,7 @@
         app.data.pets.push(createPetForStudent(student));
       }
     }
+
     const feedHistoryStudentIds = new Set(
       app.data.ledger.filter((entry) => entry.type === "feed" && entry.studentId).map((entry) => entry.studentId)
     );
@@ -484,14 +664,80 @@
     });
   }
 
-  function clearLastUndoBatch(options = {}) {
-    if (!app.data || !app.data.meta || !app.data.meta.lastUndoBatch) {
-      return;
+  function addAwardBatch(batch) {
+    const normalizedBatch = normalizeAwardBatch(batch);
+    if (!normalizedBatch) return null;
+    app.data.awardBatches = normalizeAwardBatches([normalizedBatch, ...app.data.awardBatches]);
+    return normalizedBatch;
+  }
+
+  function getAwardBatchById(batchId) {
+    return app.data.awardBatches.find((batch) => batch.id === batchId) || null;
+  }
+
+  function getOpenAwardBatches() {
+    return app.data.awardBatches
+      .filter((batch) => !batch.revokedAt)
+      .slice()
+      .sort((a, b) => b.createdAt - a.createdAt);
+  }
+
+  function getFeedbackEntries(limit) {
+    const entries = normalizeFeedbackEntries(app.data?.meta?.feedbackEntries);
+    if (!Number.isFinite(Number(limit))) {
+      return entries;
     }
-    app.data.meta.lastUndoBatch = null;
-    if (options.save) {
-      saveData();
+    return entries.slice(0, Math.max(0, Number(limit)));
+  }
+
+  function getAwardBatchStatus(batch, now = Date.now()) {
+    if (!batch) {
+      return { code: "expired", label: "已过期" };
     }
+    if (batch.revokedAt) {
+      return { code: "revoked", label: "已撤销" };
+    }
+    if (now > batch.revocableUntil) {
+      return { code: "expired", label: "已过期" };
+    }
+
+    const students = batch.studentIds.map((studentId) => getStudentById(studentId));
+    if (students.some((student) => !student)) {
+      return { code: "missing_student", label: "对象已删除" };
+    }
+    if (students.some((student) => (student.points || 0) < batch.points)) {
+      return { code: "insufficient_points", label: "积分不足" };
+    }
+    return { code: "revocable", label: "可撤销" };
+  }
+
+  function formatRemainingTime(ms) {
+    const safeMs = Math.max(0, Number(ms) || 0);
+    if (safeMs <= 60 * 1000) {
+      return "不足 1 分钟";
+    }
+
+    const days = Math.floor(safeMs / (24 * 60 * 60 * 1000));
+    const hours = Math.floor((safeMs % (24 * 60 * 60 * 1000)) / (60 * 60 * 1000));
+    const minutes = Math.floor((safeMs % (60 * 60 * 1000)) / (60 * 1000));
+    const parts = [];
+
+    if (days > 0) parts.push(`${days} 天`);
+    if (hours > 0 && parts.length < 2) parts.push(`${hours} 小时`);
+    if (minutes > 0 && parts.length < 2) parts.push(`${minutes} 分钟`);
+
+    return parts.join(" ") || "不足 1 分钟";
+  }
+
+  function getAwardBatchRemainingText(batch, now = Date.now()) {
+    if (!batch || batch.revokedAt) {
+      return "已撤销";
+    }
+    const remainingMs = batch.revocableUntil - now;
+    if (remainingMs < 0) {
+      return "已过期";
+    }
+    return `还剩 ${formatRemainingTime(remainingMs)}`;
   }
 
   function resetBulkAwardDrafts() {
@@ -550,19 +796,14 @@
     return `${group}${group.endsWith("组") ? "" : "组"}全选`;
   }
 
-  function getLastUndoBatchSummary() {
-    const batch = app.data.meta.lastUndoBatch;
-    if (!batch) return "";
-    const count = batch.studentIds.length;
-    return `${formatTime(batch.createdAt)} · ${count} 名学生各加 ${batch.deltaPoints} 分 · ${batch.reason || "加分"}`;
-  }
-
   Object.assign(CP.model, {
     loadData,
     saveData,
     sanitizeAlias,
     generateAlias,
     normalizeData,
+    normalizeAwardBatches,
+    normalizeFeedbackEntries,
     syncData,
     createPetForStudent,
     getStudentById,
@@ -590,7 +831,12 @@
     computeLevel,
     getXpProgress,
     addLedgerEntry,
-    clearLastUndoBatch,
+    addAwardBatch,
+    getAwardBatchById,
+    getOpenAwardBatches,
+    getFeedbackEntries,
+    getAwardBatchStatus,
+    getAwardBatchRemainingText,
     resetBulkAwardDrafts,
     clearBulkSelection,
     getBulkSelectedStudentIds,
@@ -600,6 +846,6 @@
     selectBulkStudents,
     getBulkGroupNames,
     formatBulkGroupLabel,
-    getLastUndoBatchSummary
+    formatTime
   });
 })(window);

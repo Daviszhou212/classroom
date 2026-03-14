@@ -8,6 +8,10 @@
     PIN_HELP_TEXT: "4-8 位字母或数字，建议使用纯数字",
     RECOVERY_CODE: "12152205",
     BACKUP_REMINDER_INTERVAL: 7 * 24 * 60 * 60 * 1000,
+    AWARD_REVOCATION_WINDOW: 7 * 24 * 60 * 60 * 1000,
+    FEEDBACK_MAX_LENGTH: 500,
+    FEEDBACK_STORAGE_LIMIT: 50,
+    FEEDBACK_PREVIEW_LIMIT: 5,
     AWARD_REASON_TEMPLATES: ["课堂表现", "作业完成", "帮助同学", "纪律良好", "积极发言"],
     QUICK_AWARD_PRESETS: {
       1: "课堂表现",
@@ -15,10 +19,11 @@
       5: "今天特别棒！"
     },
     DEFAULT_DATA: {
-      schemaVersion: 6,
+      schemaVersion: 7,
       students: [],
       pets: [],
       ledger: [],
+      awardBatches: [],
       catalog: [
         {
           id: "food-apple",
@@ -49,7 +54,7 @@
         }
       },
       meta: {
-        lastUndoBatch: null
+        feedbackEntries: []
       }
     },
     PET_TYPES: [
@@ -172,7 +177,9 @@
         supervisedFeedSessionActive: false,
         supervisedFeedStudentId: null,
         supervisedFeedVisitedStudentIds: [],
-        supervisedFeedReAdoptDraftTypeId: null
+        supervisedFeedReAdoptDraftTypeId: null,
+        feedbackModalOpen: false,
+        feedbackDraft: ""
       }
     },
     displayMotionResetTimer: null,

@@ -7,7 +7,10 @@
     PIN_RULE_LABEL,
     PIN_HELP_TEXT,
     AWARD_REASON_TEMPLATES,
-    PET_TYPES
+    PET_TYPES,
+    AWARD_REVOCATION_WINDOW,
+    FEEDBACK_MAX_LENGTH,
+    FEEDBACK_PREVIEW_LIMIT
   } = constants;
   const { app } = state;
   const { mainEl, modeIndicatorEl } = dom;
@@ -27,7 +30,10 @@
     getBulkSelectedStudentIds,
     getBulkGroupNames,
     formatBulkGroupLabel,
-    getLastUndoBatchSummary,
+    getOpenAwardBatches,
+    getFeedbackEntries,
+    getAwardBatchStatus,
+    getAwardBatchRemainingText,
     getXpProgress
   } = model;
   const DISPLAY_INTERACTION_COPY = {
@@ -236,6 +242,9 @@
     if (leavingTeacherStudents) {
       resetQuickAwardDrafts();
     }
+    if (app.view === "teacher-dashboard" && view !== "teacher-dashboard") {
+      app.ui.feedbackModalOpen = false;
+    }
     if (leavingDisplay) {
       app.ui.displaySearch = "";
       app.ui.displayPage = 0;
@@ -264,6 +273,8 @@
 
   function logoutTeacher() {
     app.auth.teacher = false;
+    app.ui.feedbackModalOpen = false;
+    app.ui.feedbackDraft = "";
     sessionStorage.removeItem("teacherAuthed");
     showToast("已退出教师模式", "info");
     setView("home");
@@ -453,6 +464,150 @@
       <div class="stat-row">
         <span class="stat-label">${label}</span>
         <div class="progress"><span style="width:${progress.percent}%"></span></div>
+      </div>
+    `;
+  }
+
+  function getAwardBatchStatusClass(code) {
+    if (code === "revocable") return "is-revocable";
+    if (code === "insufficient_points") return "is-insufficient";
+    if (code === "missing_student") return "is-missing";
+    if (code === "expired") return "is-expired";
+    return "";
+  }
+
+  function renderAwardBatchSection(options = {}) {
+    const title = options.title || "近 7 天加分记录";
+    const limit = Number.isFinite(Number(options.limit)) ? Number(options.limit) : Infinity;
+    const awardBatches = getOpenAwardBatches();
+    const visibleBatches = awardBatches.slice(0, limit);
+    const hasMore = awardBatches.length > visibleBatches.length;
+
+    return `
+      <section class="section">
+        <div class="section-header">
+          <h2>${escapeHtml(title)}</h2>
+          <span class="pill">固定 ${Math.round(AWARD_REVOCATION_WINDOW / (24 * 60 * 60 * 1000))} 天撤销窗口</span>
+        </div>
+        <p class="notice">未撤销的加分批次会保留在这里。超过 7 天会显示为“已过期”，学生被删除或积分不足时也会直接标明原因。</p>
+        ${visibleBatches.length
+          ? `
+            <div class="grid cols-3 award-batch-grid">
+              ${visibleBatches
+                .map((batch) => {
+                  const status = getAwardBatchStatus(batch);
+                  return `
+                    <article class="card award-batch-card ${getAwardBatchStatusClass(status.code)}">
+                      <div class="award-batch-card-head">
+                        <span class="badge">${escapeHtml(status.label)}</span>
+                        <span class="pill">${escapeHtml(getAwardBatchRemainingText(batch))}</span>
+                      </div>
+                      <h3>${escapeHtml(formatTime(batch.createdAt))}</h3>
+                      <p>学生人数：${batch.studentIds.length} 名</p>
+                      <p>每人加分：+${batch.points} 分</p>
+                      <p>理由：${escapeHtml(batch.reason)}</p>
+                      <div class="form-actions">
+                        <button
+                          class="${status.code === "revocable" ? "accent" : "ghost"}"
+                          data-action="revoke-award-batch"
+                          data-id="${batch.id}"
+                          ${status.code === "revocable" ? "" : "disabled"}
+                        >
+                          ${status.code === "revocable" ? "撤销本批加分" : status.label}
+                        </button>
+                      </div>
+                    </article>
+                  `;
+                })
+                .join("")}
+            </div>
+            ${hasMore ? `<p class="field-hint">当前仅展示最近 ${visibleBatches.length} 条记录。</p>` : ""}
+          `
+          : `<p class="notice">当前还没有可查看的加分撤销记录。</p>`}
+      </section>
+    `;
+  }
+
+  function renderMultilineText(value) {
+    return escapeHtml(value).replace(/\r?\n/g, "<br />");
+  }
+
+  function renderFeedbackHistory() {
+    const feedbackEntries = getFeedbackEntries(FEEDBACK_PREVIEW_LIMIT);
+    if (!feedbackEntries.length) {
+      return `<p class="notice">还没有保存过反馈，提交后会显示在这里。</p>`;
+    }
+
+    return `
+      <div class="feedback-entry-list">
+        ${feedbackEntries
+          .map((entry) => `
+            <article class="feedback-entry-card">
+              <div class="feedback-entry-head">
+                <span class="badge">教师反馈</span>
+                <time datetime="${new Date(entry.createdAt).toISOString()}">${escapeHtml(formatTime(entry.createdAt))}</time>
+              </div>
+              <p>${renderMultilineText(entry.message)}</p>
+            </article>
+          `)
+          .join("")}
+      </div>
+    `;
+  }
+
+  function renderFeedbackModal() {
+    if (!app.auth.teacher || !app.ui.feedbackModalOpen) {
+      return "";
+    }
+
+    const feedbackEntries = getFeedbackEntries(FEEDBACK_PREVIEW_LIMIT);
+    const draftMessage = String(app.ui.feedbackDraft || "");
+
+    return `
+      <div class="modal-overlay" data-action="close-feedback-modal">
+        <div
+          class="modal-card feedback-modal"
+          data-action="noop"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="feedbackModalTitle"
+        >
+          <div class="feedback-modal-header">
+            <div class="feedback-modal-copy">
+              <span class="badge">教师模式</span>
+              <h2 id="feedbackModalTitle">反馈建议</h2>
+              <p>反馈只保存在当前浏览器，并会包含在 JSON 备份里，适合记录后续想优化的点。</p>
+            </div>
+            <span class="pill">最多 ${FEEDBACK_MAX_LENGTH} 字</span>
+          </div>
+
+          <form class="feedback-form" data-action="submit-feedback">
+            <div>
+              <label for="feedbackMessage">建议内容</label>
+              <textarea
+                id="feedbackMessage"
+                name="feedbackMessage"
+                rows="6"
+                maxlength="${FEEDBACK_MAX_LENGTH}"
+                placeholder="例如：希望在教师模式里增加……"
+                required
+              >${escapeHtml(draftMessage)}</textarea>
+            </div>
+            <p class="field-hint">提交后会立即保存到本机浏览器，刷新页面后仍可查看。</p>
+            <div class="form-actions">
+              <button class="primary" type="submit">提交反馈</button>
+              <button class="ghost" type="button" data-action="close-feedback-modal">关闭</button>
+            </div>
+          </form>
+
+          <section class="feedback-history">
+            <div class="section-header feedback-history-header">
+              <h3>最近反馈</h3>
+              <span class="pill">${feedbackEntries.length ? `最近 ${feedbackEntries.length} 条` : "暂无记录"}</span>
+            </div>
+            ${renderFeedbackHistory()}
+          </section>
+        </div>
       </div>
     `;
   }
@@ -670,23 +825,9 @@
     const bulkQuickAwardDraft = Number(app.ui.bulkQuickAwardDraft || 0);
     const groupNames = getBulkGroupNames();
     const filteredIds = students.map((student) => student.id);
-    const hasUndoBatch = Boolean(app.data.meta.lastUndoBatch);
 
     return `
-      ${hasUndoBatch ? `
-        <section class="section undo-section">
-          <div class="undo-banner">
-            <div>
-              <span class="badge">可撤销</span>
-              <h2>最近一次批量加分可撤销</h2>
-              <p>${escapeHtml(getLastUndoBatchSummary())}</p>
-            </div>
-            <div class="form-actions">
-              <button class="ghost" data-action="undo-last-bulk-award">撤销最近一次批量操作</button>
-            </div>
-          </div>
-        </section>
-      ` : ""}
+      ${renderAwardBatchSection()}
       <section class="section">
         <h2>${editing ? "编辑学生" : "新增学生"}</h2>
         <form data-action="save-student">
@@ -919,7 +1060,7 @@
       ${renderBackupReminder()}
       <section class="section">
         <h2>导出备份</h2>
-        <p>备份文件会保存学生、宠物、积分、流水和系统设置。</p>
+        <p>备份文件会保存学生、宠物、积分、流水、教师反馈和系统设置。</p>
         <div class="pill-list">
           <span class="pill">最近一次备份：${escapeHtml(getLastBackupText())}</span>
         </div>
@@ -1606,6 +1747,14 @@
             .map((entry) => {
               const student = getStudentById(entry.studentId);
               const studentName = student ? `${student.name} (${SEAT_LABEL} ${student.seatNo})` : "-";
+              const actionLabelMap = {
+                award: "加分",
+                award_revoke: "撤销加分",
+                buy_food: "兑换食物",
+                feed: "喂食",
+                re_adopt: "重新领养"
+              };
+              const actionLabel = actionLabelMap[entry.type] || "记录";
               const delta = entry.deltaPoints
                 ? `${entry.deltaPoints > 0 ? "+" : ""}${entry.deltaPoints}分`
                 : "";
@@ -1616,7 +1765,7 @@
               ]
                 .filter(Boolean)
                 .join(" / ");
-              const change = [delta, effect].filter(Boolean).join(" · ") || (entry.type === "re_adopt" ? "重新领养" : "-");
+              const change = [actionLabel, delta, effect].filter(Boolean).join(" · ") || "-";
               return `
                 <tr>
                   <td>${formatTime(entry.timestamp)}</td>
@@ -1697,13 +1846,18 @@
           <button class="accent" data-action="go-supervised-feed">班会喂养</button>
           <button class="ghost" data-action="go-import">导入导出</button>
           <button class="ghost" data-action="go-settings">系统设置</button>
+          <button class="ghost" data-action="open-feedback-modal">反馈建议</button>
         </div>
       </section>
+
+      ${renderAwardBatchSection({ title: "近 7 天加分记录", limit: 6 })}
 
       <section class="section">
         <h2>最近流水</h2>
         ${renderLedgerTable(recentLedger)}
       </section>
+
+      ${renderFeedbackModal()}
     `;
   }
 

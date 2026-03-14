@@ -11,6 +11,8 @@
 - 数据机制：
   - 业务数据存储在浏览器 `LocalStorage`（键名：`class-pet-mvp`）。
   - 支持导出/导入 JSON 备份。
+  - 教师加分会同步写入 `awardBatches`，未撤销批次默认保留固定 7 天撤销窗口。
+  - 教师模式中的反馈建议保存在 `meta.feedbackEntries`，仅落在当前浏览器，并会进入 JSON 备份。
   - 支持导入 CSV 学生名单（示例见 `data-samples/students.csv`）。
 - 业务约束：
   - 不启用扣分功能（仅加分）。
@@ -59,7 +61,8 @@
   - 在 `README.md`、`index.html`、`scripts/app.js`、`styles/main.css` 未发现环境变量读取逻辑（如 `process.env`、`import.meta.env`）。
 - 代码内置配置（`scripts/app.js`）：
   - `STORAGE_KEY = "class-pet-mvp"`：本地存储键。
-  - `DEFAULT_DATA.schemaVersion = 6`：数据结构版本。
+  - `DEFAULT_DATA.schemaVersion = 7`：数据结构版本。
+  - `AWARD_REVOCATION_WINDOW = 7 * 24 * 60 * 60 * 1000`：固定 7 天加分撤销窗口。
   - `DEFAULT_DATA.config.rules`：
     - `xpPerLevel: 50`
     - `defaultHunger: 60`
@@ -79,14 +82,15 @@
   1. 教师在“学生管理”新增/编辑学生（`save-student`）。
   2. 新增学生时自动从 8 种宠物类型（`rabbit / panda / raccoon / capybara / cat / turtle / dog / bird`）中随机创建宠物档案，并默认附带 1 次重新领养机会；`syncData()` 保证学生与宠物一一对应，并补齐旧数据字段。
   3. 加载或导入旧数据时，若发现 `hamster` / `fish` 或其他无效 `petType`，会自动随机迁移到 8 种现行宠物之一。
-  4. 删除学生时同步清理该学生的宠物与流水记录。
+  4. 删除学生时会清理宠物档案，但保留历史流水与加分批次，便于后续显示“对象已删除”状态和保留审计痕迹。
 - 积分与喂养流程：
-  1. 教师在“学生管理”中通过批量加分增加积分并写入流水（`ledger`）。
+  1. 教师在“学生管理”中通过加分批次增加积分，并同时写入 `ledger` 与 `awardBatches`。
   2. 班会喂养中先通过 `buy_food` 扣积分并把食物加入学生个人库存，再通过 `feed` 从库存消耗 1 份食物，改饥饿/心情/XP，并按规则更新等级。
   3. 学生食物库存保存在 `students[*].foodInventory`，未使用完会跨回合保留。
   4. 全流程落地到 `ledger` 便于追溯。
-  5. 班会喂养通过 `supervised-feed-view` 组织学生轮流自选自己；学生在首次有效喂养前可执行 1 次 `re_adopt` 更换宠物类型，不影响等级、XP、饥饿值、心情值与积分。
-  6. 仅兑换食物不会消耗重新领养资格；首次真实喂养后资格立即失效；结束会话后清空运行时状态，但不清空库存。
+  5. 未撤销的加分批次可在固定 7 天窗口内整批撤销；若任一学生已删除、已过期或当前积分不足，则只显示状态，不允许撤销。
+  6. 班会喂养通过 `supervised-feed-view` 组织学生轮流自选自己；学生在首次有效喂养前可执行 1 次 `re_adopt` 更换宠物类型，不影响等级、XP、饥饿值、心情值与积分。
+  7. 仅兑换食物不会消耗重新领养资格；首次真实喂养后资格立即失效；结束会话后清空运行时状态，但不清空库存。
 - 数据备份/恢复流程：
   1. 在“导入导出”执行“导出 JSON”（文件名形如 `class-pet-backup-YYYYMMDD.json`）。
   2. 执行“导入数据”时先校验 `schemaVersion/students/pets/ledger/config`。
@@ -157,11 +161,13 @@
 - 学生 CSV 模板头（`data-samples/students.csv`）：
   - `studentNo,name,group,alias`
 - 关键数据结构（`scripts/app/core.js`、`scripts/app/model.js`）：
-  - 顶层：`schemaVersion`、`students`、`pets`、`ledger`、`catalog`、`config`
+  - 顶层：`schemaVersion`、`students`、`pets`、`ledger`、`awardBatches`、`catalog`、`config`
+  - `meta.feedbackEntries[*]`：教师反馈列表，结构为 `id / message / createdAt / source`
   - `students[*].foodInventory`：学生长期食物库存，结构为 `{ catalogId, quantity }[]`
   - `pets[*]`：包含 `petType`、`reAdoptAvailable`、`reAdoptedAt`
   - `petType` 合法值：`rabbit`、`panda`、`raccoon`、`capybara`、`cat`、`turtle`、`dog`、`bird`
-  - `ledger[*].type`：包含 `award`、`buy_food`、`feed`、`re_adopt` 等业务动作
+  - `ledger[*].type`：包含 `award`、`award_revoke`、`buy_food`、`feed`、`re_adopt` 等业务动作
+  - `awardBatches[*]`：包含 `id`、`studentIds`、`points`、`reason`、`createdAt`、`revocableUntil`、`revokedAt`、`revokeReason`
   - 配置：`config.teacherPinHash`、`config.rules.xpPerLevel/defaultHunger/defaultMood`
 - 关键存储位：
   - `LocalStorage`: `class-pet-mvp`
