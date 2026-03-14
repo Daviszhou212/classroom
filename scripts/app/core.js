@@ -12,6 +12,7 @@
     FEEDBACK_MAX_LENGTH: 500,
     FEEDBACK_STORAGE_LIMIT: 50,
     FEEDBACK_PREVIEW_LIMIT: 5,
+    FEEDBACK_FILE_DEFAULT_NAME: "class-pet-feedback.jsonl",
     AWARD_REASON_TEMPLATES: ["课堂表现", "作业完成", "帮助同学", "纪律良好", "积极发言"],
     QUICK_AWARD_PRESETS: {
       1: "课堂表现",
@@ -19,7 +20,7 @@
       5: "今天特别棒！"
     },
     DEFAULT_DATA: {
-      schemaVersion: 7,
+      schemaVersion: 8,
       students: [],
       pets: [],
       ledger: [],
@@ -154,11 +155,11 @@
         studentSearch: "",
         editingStudentId: null,
         studentSelectedId: null,
-        bulkQuickAwardDraft: "",
         bulkSelectedStudentIds: [],
         bulkPointsDraft: "",
         bulkReasonTemplateDraft: "",
         bulkReasonCustomDraft: "",
+        awardBatchPage: 0,
         displayPage: 0,
         displayPageSize: 16,
         displaySearch: "",
@@ -182,12 +183,23 @@
         feedbackDraft: ""
       }
     },
+    feedbackFileSession: {
+      supported: false,
+      mode: "download",
+      handle: null,
+      fileName: "",
+      lastWriteStatus: "idle",
+      lastWriteName: "",
+      lastError: ""
+    },
+    feedbackModalRefs: null,
     displayMotionResetTimer: null,
     displayInteractionResetTimer: null
   };
 
   const dom = {
     mainEl: document.getElementById("main"),
+    modalRootEl: document.getElementById("modalRoot"),
     toastEl: document.getElementById("toast"),
     modeIndicatorEl: document.getElementById("modeIndicator"),
     headerActionsEl: document.getElementById("headerActions")

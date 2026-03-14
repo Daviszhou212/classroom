@@ -6,7 +6,8 @@
     PET_TYPES,
     AWARD_REVOCATION_WINDOW,
     FEEDBACK_MAX_LENGTH,
-    FEEDBACK_STORAGE_LIMIT
+    FEEDBACK_STORAGE_LIMIT,
+    FEEDBACK_FILE_DEFAULT_NAME
   } = constants;
   const { app } = state;
   const { makeId, clamp, showToast } = utils;
@@ -25,13 +26,238 @@
     addLedgerEntry,
     addAwardBatch,
     getAwardBatchById,
-    getAwardBatchStatus,
+    getAwardBatchEntryById,
+    getAwardEntryStatus,
     getFeedbackEntries,
     setBulkSelectedStudentIds,
     clearBulkSelection,
     computeLevel
   } = model;
   const { setView } = views;
+
+  function getFeedbackFileSupport() {
+    return Boolean(window.isSecureContext && typeof window.showSaveFilePicker === "function");
+  }
+
+  function initFeedbackFileSession() {
+    const previous = state.feedbackFileSession || {};
+    const supported = getFeedbackFileSupport();
+    state.feedbackFileSession = {
+      supported,
+      mode: supported ? (previous.handle ? "file" : "picker") : "download",
+      handle: supported ? previous.handle || null : null,
+      fileName: supported ? previous.fileName || "" : "",
+      lastWriteStatus: previous.lastWriteStatus || "idle",
+      lastWriteName: previous.lastWriteName || "",
+      lastError: previous.lastError || ""
+    };
+    return state.feedbackFileSession;
+  }
+
+  function setFeedbackFileSession(patch = {}) {
+    const session = initFeedbackFileSession();
+    state.feedbackFileSession = {
+      ...session,
+      ...patch
+    };
+    return state.feedbackFileSession;
+  }
+
+  function buildFeedbackJsonlLine(entry) {
+    return `${JSON.stringify(entry)}\n`;
+  }
+
+  function buildFeedbackDownloadFileName(timestamp = Date.now()) {
+    const date = new Date(timestamp);
+    const stamp = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}${String(
+      date.getDate()
+    ).padStart(2, "0")}-${String(date.getHours()).padStart(2, "0")}${String(date.getMinutes()).padStart(
+      2,
+      "0"
+    )}${String(date.getSeconds()).padStart(2, "0")}`;
+    return `class-pet-feedback-${stamp}.jsonl`;
+  }
+
+  function downloadTextFile(text, fileName, type = "application/x-ndjson") {
+    try {
+      const blob = new Blob([text], { type });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = fileName;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+      return { ok: true, fileName };
+    } catch (error) {
+      console.error(error);
+      return { ok: false, error };
+    }
+  }
+
+  function downloadFeedbackEntry(entry) {
+    return downloadTextFile(buildFeedbackJsonlLine(entry), buildFeedbackDownloadFileName(entry.createdAt));
+  }
+
+  async function selectFeedbackSaveFile() {
+    const session = initFeedbackFileSession();
+    if (!session.supported) {
+      setFeedbackFileSession({
+        mode: "download",
+        handle: null,
+        fileName: "",
+        lastWriteStatus: "unsupported",
+        lastError: ""
+      });
+      return { ok: false, status: "unsupported" };
+    }
+
+    try {
+      const handle = await window.showSaveFilePicker({
+        suggestedName: FEEDBACK_FILE_DEFAULT_NAME,
+        types: [
+          {
+            description: "JSON Lines",
+            accept: {
+              "application/x-ndjson": [".jsonl"],
+              "application/json": [".jsonl"]
+            }
+          }
+        ]
+      });
+
+      const fileName = handle.name || FEEDBACK_FILE_DEFAULT_NAME;
+      setFeedbackFileSession({
+        mode: "file",
+        handle,
+        fileName,
+        lastWriteStatus: "selected",
+        lastWriteName: fileName,
+        lastError: ""
+      });
+      return { ok: true, status: "selected", fileName };
+    } catch (error) {
+      if (error && error.name === "AbortError") {
+        setFeedbackFileSession({
+          mode: "picker",
+          handle: null,
+          fileName: "",
+          lastWriteStatus: "cancelled",
+          lastWriteName: "",
+          lastError: ""
+        });
+        return { ok: false, status: "cancelled" };
+      }
+
+      console.error(error);
+      setFeedbackFileSession({
+        mode: "picker",
+        handle: null,
+        fileName: "",
+        lastWriteStatus: "error",
+        lastWriteName: "",
+        lastError: String((error && error.message) || error || "选择保存文件失败")
+      });
+      return { ok: false, status: "error", error };
+    }
+  }
+
+  async function appendFeedbackEntryToFile(entry) {
+    const session = initFeedbackFileSession();
+    if (!session.supported || !session.handle) {
+      return { ok: false, status: "not_ready" };
+    }
+
+    try {
+      const file = await session.handle.getFile();
+      const writable = await session.handle.createWritable({ keepExistingData: true });
+      await writable.seek(file.size);
+      await writable.write(buildFeedbackJsonlLine(entry));
+      await writable.close();
+
+      const fileName = session.handle.name || session.fileName || FEEDBACK_FILE_DEFAULT_NAME;
+      setFeedbackFileSession({
+        mode: "file",
+        handle: session.handle,
+        fileName,
+        lastWriteStatus: "written",
+        lastWriteName: fileName,
+        lastError: ""
+      });
+      return { ok: true, status: "written", fileName };
+    } catch (error) {
+      console.error(error);
+      setFeedbackFileSession({
+        mode: session.supported ? "picker" : "download",
+        handle: null,
+        fileName: "",
+        lastWriteStatus: "error",
+        lastWriteName: "",
+        lastError: String((error && error.message) || error || "写入反馈文件失败")
+      });
+      return { ok: false, status: "error", error };
+    }
+  }
+
+  async function syncFeedbackEntryToLocalFile(entry) {
+    const session = initFeedbackFileSession();
+
+    if (session.supported) {
+      if (session.handle) {
+        const writeResult = await appendFeedbackEntryToFile(entry);
+        if (writeResult.ok) {
+          return { kind: "browser_and_file", fileName: writeResult.fileName };
+        }
+      } else {
+        const selectionResult = await selectFeedbackSaveFile();
+        if (selectionResult.ok) {
+          const writeResult = await appendFeedbackEntryToFile(entry);
+          if (writeResult.ok) {
+            return { kind: "browser_and_file", fileName: writeResult.fileName };
+          }
+        }
+      }
+    }
+
+    const downloadResult = downloadFeedbackEntry(entry);
+    if (downloadResult.ok) {
+      setFeedbackFileSession({
+        mode: session.supported ? "picker" : "download",
+        lastWriteStatus: "downloaded",
+        lastWriteName: downloadResult.fileName,
+        lastError: ""
+      });
+      return { kind: "browser_and_download", fileName: downloadResult.fileName };
+    }
+
+    setFeedbackFileSession({
+      mode: session.supported ? "picker" : "download",
+      lastWriteStatus: "browser_only",
+      lastWriteName: "",
+      lastError: String((downloadResult.error && downloadResult.error.message) || downloadResult.error || "下载反馈文件失败")
+    });
+    return { kind: "browser_only" };
+  }
+
+  function getFeedbackPersistenceToast(persistence) {
+    if (!persistence || persistence.kind === "browser_only") {
+      return {
+        message: "反馈已保存到浏览器，本地文件未保存",
+        type: "warning"
+      };
+    }
+    if (persistence.kind === "browser_and_file") {
+      return {
+        message: "反馈已保存到浏览器，并已写入本地文件",
+        type: "info"
+      };
+    }
+    return {
+      message: "反馈已保存到浏览器，并已下载本地 JSONL 文件",
+      type: "info"
+    };
+  }
 
   function exportData(options = {}) {
     const now = Date.now();
@@ -55,8 +281,13 @@
     URL.revokeObjectURL(url);
 
     if (!options.silent) {
-      showToast("已导出备份文件", "info");
+      showToast("已开始下载备份，请务必检查文件确实已保存到本地。", "warning");
     }
+
+    return {
+      timestamp: now,
+      fileName: a.download
+    };
   }
 
   function confirmWithAutoBackup(message, tag) {
@@ -67,15 +298,21 @@
     return true;
   }
 
-  function submitFeedback(message) {
+  async function submitFeedback(message) {
     const normalizedMessage = String(message || "").trim();
     if (!normalizedMessage) {
-      showToast("请先填写反馈内容", "warning");
-      return false;
+      return {
+        ok: false,
+        message: "请先填写反馈内容",
+        type: "warning"
+      };
     }
     if (normalizedMessage.length > FEEDBACK_MAX_LENGTH) {
-      showToast(`反馈内容不能超过 ${FEEDBACK_MAX_LENGTH} 个字`, "warning");
-      return false;
+      return {
+        ok: false,
+        message: `反馈内容不能超过 ${FEEDBACK_MAX_LENGTH} 个字`,
+        type: "warning"
+      };
     }
 
     const nextEntry = {
@@ -90,8 +327,16 @@
     };
     app.data.meta.feedbackEntries = [nextEntry, ...getFeedbackEntries()].slice(0, FEEDBACK_STORAGE_LIMIT);
     saveData();
-    showToast("反馈已保存到当前设备", "info");
-    return true;
+
+    const persistence = await syncFeedbackEntryToLocalFile(nextEntry);
+    const toast = getFeedbackPersistenceToast(persistence);
+    return {
+      ok: true,
+      entry: nextEntry,
+      persistence,
+      message: toast.message,
+      type: toast.type
+    };
   }
 
   async function hashPin(pin) {
@@ -125,13 +370,18 @@
     const now = Date.now();
     return {
       id: makeId("award-batch"),
-      studentIds: [...studentIds],
-      points,
       reason: String(reason || "加分").trim() || "加分",
       createdAt: now,
-      revocableUntil: now + AWARD_REVOCATION_WINDOW,
-      revokedAt: null,
-      revokeReason: ""
+      entries: [...studentIds].map((studentId) => ({
+        id: makeId("award-entry"),
+        studentId,
+        points,
+        reason: String(reason || "加分").trim() || "加分",
+        createdAt: now,
+        revocableUntil: now + AWARD_REVOCATION_WINDOW,
+        revokedAt: null,
+        revokeReason: ""
+      }))
     };
   }
 
@@ -160,7 +410,9 @@
       return false;
     }
 
-    students.forEach((student) => {
+    batch.entries.forEach((entry) => {
+      const student = getStudentById(entry.studentId);
+      if (!student) return;
       student.points = (student.points || 0) + delta;
       addLedgerEntry({
         timestamp: batch.createdAt,
@@ -168,7 +420,8 @@
         type: "award",
         deltaPoints: delta,
         reason: batch.reason,
-        batchId: batch.id
+        batchId: batch.id,
+        awardEntryId: entry.id
       });
     });
 
@@ -178,24 +431,30 @@
     return true;
   }
 
-  function revokeAwardBatch(batchId) {
+  function revokeAwardEntry(batchId, entryId) {
     const batch = getAwardBatchById(batchId);
     if (!batch) {
       showToast("未找到对应的加分批次", "warning");
       return false;
     }
 
-    const status = getAwardBatchStatus(batch);
+    const awardEntry = getAwardBatchEntryById(batch, entryId);
+    if (!awardEntry) {
+      showToast("未找到对应的加分条目", "warning");
+      return false;
+    }
+
+    const status = getAwardEntryStatus(awardEntry);
     if (status.code === "revoked") {
-      showToast("该加分批次已撤销", "warning");
+      showToast("该加分条目已撤销", "warning");
       return false;
     }
     if (status.code === "expired") {
-      showToast("该加分批次已过期，不能再撤销", "warning");
+      showToast("该加分条目已过期，不能再撤销", "warning");
       return false;
     }
     if (status.code === "missing_student") {
-      showToast("该加分批次涉及的学生已删除，不能撤销", "warning");
+      showToast("该加分条目对应的学生已删除，不能撤销", "warning");
       return false;
     }
     if (status.code === "insufficient_points") {
@@ -203,26 +462,29 @@
       return false;
     }
 
-    const students = batch.studentIds.map((studentId) => getStudentById(studentId));
+    const student = getStudentById(awardEntry.studentId);
+    if (!student) {
+      showToast("未找到对应学生，不能撤销", "warning");
+      return false;
+    }
     const now = Date.now();
     const revokeReason = "教师撤销加分";
 
-    students.forEach((student) => {
-      student.points -= batch.points;
-      addLedgerEntry({
-        timestamp: now,
-        studentId: student.id,
-        type: "award_revoke",
-        deltaPoints: -batch.points,
-        reason: revokeReason,
-        batchId: batch.id
-      });
+    student.points -= awardEntry.points;
+    addLedgerEntry({
+      timestamp: now,
+      studentId: student.id,
+      type: "award_revoke",
+      deltaPoints: -awardEntry.points,
+      reason: revokeReason,
+      batchId: batch.id,
+      awardEntryId: awardEntry.id
     });
 
-    batch.revokedAt = now;
-    batch.revokeReason = revokeReason;
+    awardEntry.revokedAt = now;
+    awardEntry.revokeReason = revokeReason;
     saveData();
-    showToast(`已撤销 ${students.length} 名学生的加分批次`, "info");
+    showToast(`已撤销 ${student.name} 的这条加分`, "info");
     return true;
   }
 
@@ -501,14 +763,17 @@
   }
 
   Object.assign(CP.actions, {
+    initFeedbackFileSession,
     exportData,
     confirmWithAutoBackup,
+    selectFeedbackSaveFile,
+    getFeedbackPersistenceToast,
     submitFeedback,
     hashPin,
     isStoredTeacherPinHashValid,
     getTeacherPinState,
     bulkAwardStudents,
-    revokeAwardBatch,
+    revokeAwardEntry,
     buyFoodForStudent,
     feedStudent,
     reAdoptPetForStudent,

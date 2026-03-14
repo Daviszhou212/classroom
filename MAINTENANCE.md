@@ -11,8 +11,9 @@
 - 数据机制：
   - 业务数据存储在浏览器 `LocalStorage`（键名：`class-pet-mvp`）。
   - 支持导出/导入 JSON 备份。
-  - 教师加分会同步写入 `awardBatches`，未撤销批次默认保留固定 7 天撤销窗口。
-  - 教师模式中的反馈建议保存在 `meta.feedbackEntries`，仅落在当前浏览器，并会进入 JSON 备份。
+  - 教师加分会同步写入 `awardBatches`，按批次分组展示，但真正撤销粒度为批内单条加分记录。
+  - 教师模式中的反馈建议保存在 `meta.feedbackEntries`，会进入 JSON 备份。
+  - 提交反馈时会优先尝试同步追加到本地 `JSONL` 文件；不支持文件句柄能力时自动退化为下载单条 `JSONL` 文件。
   - 支持导入 CSV 学生名单（示例见 `data-samples/students.csv`）。
 - 业务约束：
   - 不启用扣分功能（仅加分）。
@@ -27,6 +28,7 @@
 - 浏览器能力依赖（来自 `scripts/app/*.js` 与 `scripts/app.js`）：
   - `localStorage`、`sessionStorage`
   - `FileReader`、`Blob`、`URL.createObjectURL`
+  - `showSaveFilePicker` / `FileSystemFileHandle`（仅用于支持环境下的反馈持续写文件）
   - `TextEncoder`、`crypto.subtle`（PIN 哈希；不可用时走 `legacy` 兜底）
 - 本地启动依赖：
   - 可直接打开 `index.html`。
@@ -61,7 +63,7 @@
   - 在 `README.md`、`index.html`、`scripts/app.js`、`styles/main.css` 未发现环境变量读取逻辑（如 `process.env`、`import.meta.env`）。
 - 代码内置配置（`scripts/app.js`）：
   - `STORAGE_KEY = "class-pet-mvp"`：本地存储键。
-  - `DEFAULT_DATA.schemaVersion = 7`：数据结构版本。
+  - `DEFAULT_DATA.schemaVersion = 8`：数据结构版本。
   - `AWARD_REVOCATION_WINDOW = 7 * 24 * 60 * 60 * 1000`：固定 7 天加分撤销窗口。
   - `DEFAULT_DATA.config.rules`：
     - `xpPerLevel: 50`
@@ -88,13 +90,17 @@
   2. 班会喂养中先通过 `buy_food` 扣积分并把食物加入学生个人库存，再通过 `feed` 从库存消耗 1 份食物，改饥饿/心情/XP，并按规则更新等级。
   3. 学生食物库存保存在 `students[*].foodInventory`，未使用完会跨回合保留。
   4. 全流程落地到 `ledger` 便于追溯。
-  5. 未撤销的加分批次可在固定 7 天窗口内整批撤销；若任一学生已删除、已过期或当前积分不足，则只显示状态，不允许撤销。
+  5. 未撤销的加分批次会继续显示在列表中，但实际撤销按批内单条执行；若某一条学生已删除、已过期或当前积分不足，只阻塞该条，不影响同批其他条目。
   6. 班会喂养通过 `supervised-feed-view` 组织学生轮流自选自己；学生在首次有效喂养前可执行 1 次 `re_adopt` 更换宠物类型，不影响等级、XP、饥饿值、心情值与积分。
   7. 仅兑换食物不会消耗重新领养资格；首次真实喂养后资格立即失效；结束会话后清空运行时状态，但不清空库存。
 - 数据备份/恢复流程：
   1. 在“导入导出”执行“导出 JSON”（文件名形如 `class-pet-backup-YYYYMMDD.json`）。
   2. 执行“导入数据”时先校验 `schemaVersion/students/pets/ledger/config`。
   3. 导入确认后覆盖当前数据，再 `normalizeData()` + `syncData()`；旧宠物类型会在此阶段自动迁移。
+- 反馈落文件流程：
+  1. 提交反馈时先写入 `meta.feedbackEntries`，这是系统内唯一真实数据源。
+  2. 若当前环境支持文件句柄，首次提交会提示选择 `class-pet-feedback.jsonl`，后续同一页面会话继续向该文件尾部追加一行 JSONL。
+  3. 若不支持、权限拒绝、句柄失效或用户取消，系统会自动下载单条 `JSONL` 文件，但不会影响浏览器内反馈保存。
 - 学生名单 CSV 导入流程：
   1. 选择 CSV 文件执行导入。
   2. 解析成功后会覆盖现有 `students/pets/ledger`。
@@ -122,13 +128,15 @@
 
 ### 发布前核对项
 - [ ] `index.html` 能正确按顺序加载 `styles/main.css`、`scripts/vendor/pinyin-pro.js`、`scripts/app/*.js` 与 `scripts/app.js`。
-- [ ] 教师模式可登录/退出，PIN 设置与修改流程可用，且教师态顶部仅保留“退出教师模式”。
+- [ ] 教师模式可登录/退出，PIN 设置与修改流程可用，且教师态顶部统一提供“返回仪表盘”和“退出教师模式”两个入口，前者位于左侧。
 - [ ] 学生新增、编辑、删除后，宠物档案与流水状态一致。
 - [ ] 运行时仅使用 8 种宠物类型；旧类型 `hamster` / `fish` 导入后会自动迁移。
 - [ ] 班会喂养模式可进入、返回名单、一次重新领养、连续喂养、手动结束会话。
 - [ ] 班会喂养模式支持先兑换食物，再从个人背包喂养；未使用食物会保留到后续回合。
 - [ ] 展示模式仅从主页进入，退出后返回主页；分页、搜索、详情弹层可正常操作且保持只读。
 - [ ] JSON 导出文件可生成，JSON 导入校验通过并可恢复数据。
+- [ ] 教师仪表盘的数据安全状态、最近备份时间与“立即备份”入口显示正确。
+- [ ] 反馈提交后会同步尝试落本地文件；支持环境持续写同一 `JSONL`，不支持环境自动退化为下载。
 - [ ] 宠物图片来自 `assets/pets/<type>/*.png`，进入宠物页面后会按页面会话随机轮换且同页不闪烁。
 - [ ] CSV 导入按模板可成功，且会按预期覆盖 `students/pets/ledger`。
 - [ ] 危险操作“清空所有数据”有二次确认并按预期执行。
@@ -167,7 +175,9 @@
   - `pets[*]`：包含 `petType`、`reAdoptAvailable`、`reAdoptedAt`
   - `petType` 合法值：`rabbit`、`panda`、`raccoon`、`capybara`、`cat`、`turtle`、`dog`、`bird`
   - `ledger[*].type`：包含 `award`、`award_revoke`、`buy_food`、`feed`、`re_adopt` 等业务动作
-  - `awardBatches[*]`：包含 `id`、`studentIds`、`points`、`reason`、`createdAt`、`revocableUntil`、`revokedAt`、`revokeReason`
+  - `awardBatches[*]`：包含 `id`、`reason`、`createdAt`、`entries`
+  - `awardBatches[*].entries[*]`：包含 `id`、`studentId`、`points`、`reason`、`createdAt`、`revocableUntil`、`revokedAt`、`revokeReason`
+  - `ledger[*].awardEntryId`：用于把单条 `award` / `award_revoke` 流水与对应加分条目稳定关联
   - 配置：`config.teacherPinHash`、`config.rules.xpPerLevel/defaultHunger/defaultMood`
 - 关键存储位：
   - `LocalStorage`: `class-pet-mvp`

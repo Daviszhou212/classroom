@@ -13,7 +13,7 @@
     FEEDBACK_PREVIEW_LIMIT
   } = constants;
   const { app } = state;
-  const { mainEl, modeIndicatorEl } = dom;
+  const { mainEl, modalRootEl, modeIndicatorEl } = dom;
   const { escapeHtml, showToast, clamp, formatTime } = utils;
   const {
     getStudentById,
@@ -32,7 +32,10 @@
     formatBulkGroupLabel,
     getOpenAwardBatches,
     getFeedbackEntries,
+    getAwardBatchSummary,
     getAwardBatchStatus,
+    getAwardEntryStatus,
+    getAwardEntryRemainingText,
     getAwardBatchRemainingText,
     getXpProgress
   } = model;
@@ -85,18 +88,14 @@
     return !message;
   }
 
-  function clearBulkQuickAwardDraft() {
-    app.ui.bulkQuickAwardDraft = "";
+  function clearBulkPointsDraft() {
+    app.ui.bulkPointsDraft = "";
   }
 
-  function resetQuickAwardDrafts() {
-    clearBulkQuickAwardDraft();
-  }
-
-  function setBulkQuickAwardDraft(points) {
+  function toggleBulkPointsDraft(points) {
     const value = Number(points);
     if (!Number.isFinite(value) || value <= 0) return;
-    app.ui.bulkQuickAwardDraft = Number(app.ui.bulkQuickAwardDraft || 0) === value ? "" : String(value);
+    app.ui.bulkPointsDraft = Number(app.ui.bulkPointsDraft || 0) === value ? "" : String(value);
   }
 
   function isTeacherManagementView(view = app.view) {
@@ -240,10 +239,10 @@
     const leavingDisplay = app.view === "display-view" && view !== "display-view";
     const leavingSupervisedFeed = app.view === "supervised-feed-view" && view !== "supervised-feed-view";
     if (leavingTeacherStudents) {
-      resetQuickAwardDrafts();
+      clearBulkPointsDraft();
     }
     if (app.view === "teacher-dashboard" && view !== "teacher-dashboard") {
-      app.ui.feedbackModalOpen = false;
+      closeFeedbackModal();
     }
     if (leavingDisplay) {
       app.ui.displaySearch = "";
@@ -273,8 +272,7 @@
 
   function logoutTeacher() {
     app.auth.teacher = false;
-    app.ui.feedbackModalOpen = false;
-    app.ui.feedbackDraft = "";
+    closeFeedbackModal({ clearDraft: true });
     sessionStorage.removeItem("teacherAuthed");
     showToast("已退出教师模式", "info");
     setView("home");
@@ -293,6 +291,18 @@
       el.classList.toggle("primary", isActive);
       el.classList.toggle("ghost", !isActive);
     });
+  }
+
+  function updateTeacherHeaderActions() {
+    const teacherHomeBtn = document.getElementById("teacherHomeBtn");
+    if (!teacherHomeBtn) return;
+
+    const showTeacherHomeBtn =
+      app.auth.teacher &&
+      app.view !== "teacher-dashboard" &&
+      (isTeacherManagementView(app.view) || app.view === "supervised-feed-view");
+    teacherHomeBtn.hidden = !showTeacherHomeBtn;
+    teacherHomeBtn.disabled = !showTeacherHomeBtn;
   }
 
   function resetSupervisedFeedSession() {
@@ -419,26 +429,84 @@
     return app.data.config.lastBackupAt ? formatTime(app.data.config.lastBackupAt) : "还没有备份";
   }
 
+  function getBackupRiskStatus(now = Date.now()) {
+    const lastBackupAt = Number(app.data.config.lastBackupAt || 0);
+    if (!lastBackupAt) {
+      return {
+        code: "never",
+        label: "从未备份",
+        className: "is-danger",
+        message: "当前业务主数据主要保存在浏览器本地，建议先导出一份完整 JSON 备份。"
+      };
+    }
+    if (now - lastBackupAt >= BACKUP_REMINDER_INTERVAL) {
+      return {
+        code: "stale",
+        label: "超过 7 天未备份",
+        className: "is-warning",
+        message: `最近完整 JSON 备份：${getLastBackupText()}。建议立即重新导出一份完整备份。`
+      };
+    }
+    return {
+      code: "recent",
+      label: "最近已备份",
+      className: "is-safe",
+      message: `最近完整 JSON 备份：${getLastBackupText()}。当前仍建议在重要操作前再次备份。`
+    };
+  }
+
   function shouldShowBackupReminder() {
     const lastBackupAt = Number(app.data.config.lastBackupAt || 0);
     return !lastBackupAt || Date.now() - lastBackupAt >= BACKUP_REMINDER_INTERVAL;
   }
 
+  function renderBackupConfirmHint() {
+    return `
+      <p class="field-hint backup-confirm-hint">点击后请务必检查浏览器下载列表或目标文件夹，确认备份文件真的保存了。</p>
+    `;
+  }
+
   function renderBackupReminder() {
     if (!shouldShowBackupReminder()) return "";
+    const status = getBackupRiskStatus();
 
     return `
-      <section class="section banner-section">
+      <section class="section banner-section" data-backup-reminder-section>
         <div class="banner-card">
           <div>
-            <span class="badge">备份提醒</span>
+            <span class="badge backup-status-pill ${status.className}" data-backup-reminder-badge>${status.label}</span>
             <h2>当前数据保存在这台电脑的浏览器里</h2>
-            <p>建议定期导出一份备份文件。最近一次备份：${escapeHtml(getLastBackupText())}</p>
+            <p data-backup-reminder-message>${escapeHtml(status.message)}</p>
           </div>
           <div class="form-actions">
             <button class="primary" data-action="export-data">立即备份</button>
           </div>
+          ${renderBackupConfirmHint()}
         </div>
+      </section>
+    `;
+  }
+
+  function renderDataSafetySection() {
+    const status = getBackupRiskStatus();
+    return `
+      <section class="section data-safety-section" data-backup-safety-card>
+        <div class="section-header">
+          <h2>数据安全</h2>
+          <span class="pill backup-status-pill ${status.className}" data-backup-risk-label>${status.label}</span>
+        </div>
+        <p class="notice data-safety-notice" data-backup-risk-message>
+          当前业务主数据主要保存在浏览器本地。清理站点数据、换浏览器、换电脑或更改打开方式，都可能导致数据不可恢复。
+        </p>
+        <div class="pill-list">
+          <span class="pill" data-last-backup-pill>最近完整 JSON 备份：${escapeHtml(getLastBackupText())}</span>
+        </div>
+        <p class="field-hint data-safety-hint">${escapeHtml(status.message)}</p>
+        <div class="form-actions">
+          <button class="primary" data-action="export-data">立即备份</button>
+          <button class="ghost" data-action="go-import">进入导入导出</button>
+        </div>
+        ${renderBackupConfirmHint()}
       </section>
     `;
   }
@@ -476,12 +544,50 @@
     return "";
   }
 
+  function renderAwardBatchEntry(batch, entry) {
+    const status = getAwardEntryStatus(entry);
+    const student = getStudentById(entry.studentId);
+    const studentLabel = student
+      ? `${student.name}（${SEAT_LABEL} ${student.seatNo}${student.group ? ` / ${student.group}` : ""}）`
+      : "学生已删除";
+
+    return `
+      <div class="award-batch-entry ${getAwardBatchStatusClass(status.code)}">
+        <div class="award-batch-entry-head">
+          <div class="award-batch-entry-copy">
+            <strong>${escapeHtml(studentLabel)}</strong>
+            <p>+${entry.points} 分${entry.reason ? ` · ${escapeHtml(entry.reason)}` : ""}</p>
+          </div>
+          <div class="award-batch-entry-badges">
+            <span class="badge">${escapeHtml(status.label)}</span>
+            <span class="pill">${escapeHtml(getAwardEntryRemainingText(entry))}</span>
+          </div>
+        </div>
+        <div class="form-actions compact-actions award-batch-entry-actions">
+          <button
+            class="${status.code === "revocable" ? "accent small" : "ghost small"}"
+            data-action="revoke-award-entry"
+            data-batch-id="${batch.id}"
+            data-entry-id="${entry.id}"
+            ${status.code === "revocable" ? "" : "disabled"}
+          >
+            ${status.code === "revocable" ? "撤销这条加分" : status.label}
+          </button>
+        </div>
+      </div>
+    `;
+  }
+
   function renderAwardBatchSection(options = {}) {
     const title = options.title || "近 7 天加分记录";
-    const limit = Number.isFinite(Number(options.limit)) ? Number(options.limit) : Infinity;
+    const pageSize = 3;
     const awardBatches = getOpenAwardBatches();
-    const visibleBatches = awardBatches.slice(0, limit);
-    const hasMore = awardBatches.length > visibleBatches.length;
+    const totalPages = Math.max(1, Math.ceil(awardBatches.length / pageSize));
+    const page = clamp(Number(app.ui.awardBatchPage) || 0, 0, totalPages - 1);
+    app.ui.awardBatchPage = page;
+    const start = page * pageSize;
+    const visibleBatches = awardBatches.slice(start, start + pageSize);
+    const hasPagination = awardBatches.length > pageSize;
 
     return `
       <section class="section">
@@ -489,13 +595,15 @@
           <h2>${escapeHtml(title)}</h2>
           <span class="pill">固定 ${Math.round(AWARD_REVOCATION_WINDOW / (24 * 60 * 60 * 1000))} 天撤销窗口</span>
         </div>
-        <p class="notice">未撤销的加分批次会保留在这里。超过 7 天会显示为“已过期”，学生被删除或积分不足时也会直接标明原因。</p>
+        <p class="notice">加分仍按批次分组展示，但撤销改为逐条处理。同批里某一条过期、学生已删除或积分不足时，不会阻塞其他条目继续撤销。</p>
         ${visibleBatches.length
           ? `
             <div class="grid cols-3 award-batch-grid">
               ${visibleBatches
                 .map((batch) => {
                   const status = getAwardBatchStatus(batch);
+                  const summary = getAwardBatchSummary(batch);
+                  const blockedCount = summary.expiredCount + summary.missingCount + summary.insufficientCount;
                   return `
                     <article class="card award-batch-card ${getAwardBatchStatusClass(status.code)}">
                       <div class="award-batch-card-head">
@@ -503,25 +611,34 @@
                         <span class="pill">${escapeHtml(getAwardBatchRemainingText(batch))}</span>
                       </div>
                       <h3>${escapeHtml(formatTime(batch.createdAt))}</h3>
-                      <p>学生人数：${batch.studentIds.length} 名</p>
-                      <p>每人加分：+${batch.points} 分</p>
                       <p>理由：${escapeHtml(batch.reason)}</p>
-                      <div class="form-actions">
-                        <button
-                          class="${status.code === "revocable" ? "accent" : "ghost"}"
-                          data-action="revoke-award-batch"
-                          data-id="${batch.id}"
-                          ${status.code === "revocable" ? "" : "disabled"}
-                        >
-                          ${status.code === "revocable" ? "撤销本批加分" : status.label}
-                        </button>
+                      <div class="pill-list award-batch-summary">
+                        <span class="pill">共 ${summary.totalCount} 条</span>
+                        <span class="pill">可撤销 ${summary.revocableCount} 条</span>
+                        <span class="pill">已撤销 ${summary.revokedCount} 条</span>
+                        ${blockedCount ? `<span class="pill">受阻 ${blockedCount} 条</span>` : ""}
+                      </div>
+                      <div class="award-batch-entry-list">
+                        ${(Array.isArray(batch.entries) ? batch.entries : [])
+                          .map((entry) => renderAwardBatchEntry(batch, entry))
+                          .join("")}
                       </div>
                     </article>
                   `;
                 })
                 .join("")}
             </div>
-            ${hasMore ? `<p class="field-hint">当前仅展示最近 ${visibleBatches.length} 条记录。</p>` : ""}
+            ${hasPagination
+              ? `
+                <div class="award-batch-pagination">
+                  <p class="field-hint">第 ${page + 1} / ${totalPages} 页，每页最多展示 ${pageSize} 个批次。当前显示 ${start + 1}-${start + visibleBatches.length} / ${awardBatches.length} 个批次。</p>
+                  <div class="form-actions compact-actions">
+                    <button class="ghost small" data-action="award-batch-prev-page" ${page === 0 ? "disabled" : ""}>上一页</button>
+                    <button class="ghost small" data-action="award-batch-next-page" ${page >= totalPages - 1 ? "disabled" : ""}>下一页</button>
+                  </div>
+                </div>
+              `
+              : ""}
           `
           : `<p class="notice">当前还没有可查看的加分撤销记录。</p>`}
       </section>
@@ -532,8 +649,7 @@
     return escapeHtml(value).replace(/\r?\n/g, "<br />");
   }
 
-  function renderFeedbackHistory() {
-    const feedbackEntries = getFeedbackEntries(FEEDBACK_PREVIEW_LIMIT);
+  function renderFeedbackHistory(feedbackEntries = getFeedbackEntries(FEEDBACK_PREVIEW_LIMIT)) {
     if (!feedbackEntries.length) {
       return `<p class="notice">还没有保存过反馈，提交后会显示在这里。</p>`;
     }
@@ -555,14 +671,92 @@
     `;
   }
 
-  function renderFeedbackModal() {
-    if (!app.auth.teacher || !app.ui.feedbackModalOpen) {
-      return "";
+  function getFeedbackFileSessionState() {
+    const session = state.feedbackFileSession || {};
+    const supported = session.supported === true;
+    return {
+      supported,
+      mode: session.mode || (supported ? "picker" : "download"),
+      fileName: session.fileName || "",
+      lastWriteStatus: session.lastWriteStatus || "idle",
+      lastWriteName: session.lastWriteName || "",
+      lastError: session.lastError || ""
+    };
+  }
+
+  function renderFeedbackBackupStatusCard() {
+    const status = getBackupRiskStatus();
+    return `
+      <div class="feedback-status-head">
+        <h3>完整备份</h3>
+        <span class="pill backup-status-pill ${status.className}">${status.label}</span>
+      </div>
+      <p>${escapeHtml(status.message)}</p>
+      <div class="pill-list">
+        <span class="pill">最近完整 JSON 备份：${escapeHtml(getLastBackupText())}</span>
+      </div>
+      <div class="form-actions compact-actions">
+        <button class="ghost small" type="button" data-action="feedback-backup-now">立即备份</button>
+      </div>
+      ${renderBackupConfirmHint()}
+    `;
+  }
+
+  function renderFeedbackFileStatusCard() {
+    const session = getFeedbackFileSessionState();
+    let label = "当前环境将回退为下载";
+    let className = "is-warning";
+    let description = "当前浏览器或打开方式不支持持续写入同一文件。提交反馈时会自动下载单条 JSONL 文件。";
+    let detail = "";
+    let actionHtml = "";
+
+    if (session.supported && session.mode === "file" && session.fileName) {
+      label = "已绑定同一文件持续写入";
+      className = "is-safe";
+      description = `当前文件：${session.fileName}。后续提交会继续向这个文件末尾追加 JSONL。`;
+      detail =
+        session.lastWriteStatus === "written"
+          ? `上次提交已写入：${session.lastWriteName || session.fileName}`
+          : "当前页面会话内会继续复用这个文件。";
+      actionHtml = `
+        <div class="form-actions compact-actions">
+          <button class="ghost small" type="button" data-action="feedback-select-file">更换保存文件</button>
+        </div>
+      `;
+    } else if (session.supported) {
+      label = "尚未绑定保存文件";
+      className = "is-neutral";
+      description = "当前环境支持持续写入同一文件。首次提交会先提示选择文件；若取消或写入失败，会自动回退为下载单条 JSONL 文件。";
+      if (session.lastWriteStatus === "downloaded") {
+        detail = `上次提交已回退下载：${session.lastWriteName}`;
+      } else if (session.lastWriteStatus === "browser_only") {
+        detail = `上次提交仅保存到浏览器：${session.lastError || "本地文件未保存"}`;
+      } else if (session.lastWriteStatus === "error") {
+        detail = `最近一次文件写入失败：${session.lastError || "请重新选择保存文件"}`;
+      }
+      actionHtml = `
+        <div class="form-actions compact-actions">
+          <button class="ghost small" type="button" data-action="feedback-select-file">选择保存文件</button>
+        </div>
+      `;
+    } else if (session.lastWriteStatus === "downloaded") {
+      detail = `上次提交已下载：${session.lastWriteName}`;
+    } else if (session.lastWriteStatus === "browser_only") {
+      detail = `上次提交仅保存到浏览器：${session.lastError || "本地文件未保存"}`;
     }
 
-    const feedbackEntries = getFeedbackEntries(FEEDBACK_PREVIEW_LIMIT);
-    const draftMessage = String(app.ui.feedbackDraft || "");
+    return `
+      <div class="feedback-status-head">
+        <h3>反馈文件</h3>
+        <span class="pill backup-status-pill ${className}">${escapeHtml(label)}</span>
+      </div>
+      <p>${escapeHtml(description)}</p>
+      ${detail ? `<p class="field-hint">${escapeHtml(detail)}</p>` : ""}
+      ${actionHtml}
+    `;
+  }
 
+  function createFeedbackModalHtml() {
     return `
       <div class="modal-overlay" data-action="close-feedback-modal">
         <div
@@ -571,14 +765,19 @@
           role="dialog"
           aria-modal="true"
           aria-labelledby="feedbackModalTitle"
-        >
+          >
           <div class="feedback-modal-header">
             <div class="feedback-modal-copy">
               <span class="badge">教师模式</span>
               <h2 id="feedbackModalTitle">反馈建议</h2>
-              <p>反馈只保存在当前浏览器，并会包含在 JSON 备份里，适合记录后续想优化的点。</p>
+              <p>反馈会先保存到浏览器，并尝试同步落到本地 JSONL 文件；完整业务数据仍建议定期导出 JSON 备份。</p>
             </div>
             <span class="pill">最多 ${FEEDBACK_MAX_LENGTH} 字</span>
+          </div>
+
+          <div class="feedback-status-grid">
+            <section class="feedback-status-card" data-feedback-backup-panel></section>
+            <section class="feedback-status-card" data-feedback-file-panel></section>
           </div>
 
           <form class="feedback-form" data-action="submit-feedback">
@@ -591,9 +790,9 @@
                 maxlength="${FEEDBACK_MAX_LENGTH}"
                 placeholder="例如：希望在教师模式里增加……"
                 required
-              >${escapeHtml(draftMessage)}</textarea>
+              ></textarea>
             </div>
-            <p class="field-hint">提交后会立即保存到本机浏览器，刷新页面后仍可查看。</p>
+            <p class="field-hint">提交后会立即写入浏览器本地数据，并按当前环境尝试同步保存到本地 JSONL 文件。</p>
             <div class="form-actions">
               <button class="primary" type="submit">提交反馈</button>
               <button class="ghost" type="button" data-action="close-feedback-modal">关闭</button>
@@ -603,17 +802,144 @@
           <section class="feedback-history">
             <div class="section-header feedback-history-header">
               <h3>最近反馈</h3>
-              <span class="pill">${feedbackEntries.length ? `最近 ${feedbackEntries.length} 条` : "暂无记录"}</span>
+              <span class="pill" data-feedback-count>暂无记录</span>
             </div>
-            ${renderFeedbackHistory()}
+            <div data-feedback-history></div>
           </section>
         </div>
       </div>
     `;
   }
 
+  function cacheFeedbackModalRefs() {
+    if (!modalRootEl) return null;
+    const overlayEl = modalRootEl.querySelector(".modal-overlay");
+    const modalCardEl = modalRootEl.querySelector(".feedback-modal");
+    const formEl = modalRootEl.querySelector('.feedback-form[data-action="submit-feedback"]');
+    const textareaEl = modalRootEl.querySelector("#feedbackMessage");
+    const countEl = modalRootEl.querySelector("[data-feedback-count]");
+    const historyEl = modalRootEl.querySelector("[data-feedback-history]");
+    const backupPanelEl = modalRootEl.querySelector("[data-feedback-backup-panel]");
+    const filePanelEl = modalRootEl.querySelector("[data-feedback-file-panel]");
+
+    if (!overlayEl || !modalCardEl || !formEl || !textareaEl || !countEl || !historyEl || !backupPanelEl || !filePanelEl) {
+      state.feedbackModalRefs = null;
+      return null;
+    }
+
+    state.feedbackModalRefs = {
+      overlayEl,
+      modalCardEl,
+      formEl,
+      textareaEl,
+      countEl,
+      historyEl,
+      backupPanelEl,
+      filePanelEl
+    };
+    return state.feedbackModalRefs;
+  }
+
+  function syncBackupStatusDom() {
+    const status = getBackupRiskStatus();
+    const reminderSectionEls = Array.from(document.querySelectorAll("[data-backup-reminder-section]"));
+    reminderSectionEls.forEach((sectionEl) => {
+      sectionEl.hidden = !shouldShowBackupReminder();
+      const badgeEl = sectionEl.querySelector("[data-backup-reminder-badge]");
+      const messageEl = sectionEl.querySelector("[data-backup-reminder-message]");
+      if (badgeEl) {
+        badgeEl.className = `badge backup-status-pill ${status.className}`;
+        badgeEl.textContent = status.label;
+      }
+      if (messageEl) {
+        messageEl.textContent = status.message;
+      }
+    });
+
+    const riskLabelEls = Array.from(document.querySelectorAll("[data-backup-risk-label]"));
+    riskLabelEls.forEach((labelEl) => {
+      labelEl.className = `pill backup-status-pill ${status.className}`;
+      labelEl.textContent = status.label;
+    });
+
+    const riskMessageEls = Array.from(document.querySelectorAll("[data-backup-risk-message]"));
+    riskMessageEls.forEach((messageEl) => {
+      if (messageEl.classList.contains("data-safety-notice")) {
+        messageEl.textContent = "当前业务主数据主要保存在浏览器本地。清理站点数据、换浏览器、换电脑或更改打开方式，都可能导致数据不可恢复。";
+      } else {
+        messageEl.textContent = status.message;
+      }
+    });
+
+    const lastBackupEls = Array.from(document.querySelectorAll("[data-last-backup-pill]"));
+    lastBackupEls.forEach((pillEl) => {
+      pillEl.textContent = `最近完整 JSON 备份：${getLastBackupText()}`;
+    });
+
+    return true;
+  }
+
+  function syncFeedbackModalDom(options = {}) {
+    if (!app.ui.feedbackModalOpen || !modalRootEl) return false;
+    const refs = state.feedbackModalRefs || cacheFeedbackModalRefs();
+    if (!refs) return false;
+
+    const feedbackEntries = getFeedbackEntries(FEEDBACK_PREVIEW_LIMIT);
+    refs.countEl.textContent = feedbackEntries.length ? `最近 ${feedbackEntries.length} 条` : "暂无记录";
+    refs.historyEl.innerHTML = renderFeedbackHistory(feedbackEntries);
+    refs.backupPanelEl.innerHTML = renderFeedbackBackupStatusCard();
+    refs.filePanelEl.innerHTML = renderFeedbackFileStatusCard();
+
+    const nextDraft = String(options.draft ?? app.ui.feedbackDraft ?? "");
+    if (refs.textareaEl.value !== nextDraft) {
+      refs.textareaEl.value = nextDraft;
+    }
+
+    if (options.focusInput) {
+      requestAnimationFrame(() => {
+        const activeRefs = state.feedbackModalRefs || cacheFeedbackModalRefs();
+        if (!activeRefs) return;
+        activeRefs.textareaEl.focus();
+        const end = activeRefs.textareaEl.value.length;
+        activeRefs.textareaEl.setSelectionRange(end, end);
+      });
+    }
+
+    return true;
+  }
+
+  function openFeedbackModal(options = {}) {
+    if (!app.auth.teacher || app.view !== "teacher-dashboard" || !modalRootEl) {
+      return false;
+    }
+
+    app.ui.feedbackModalOpen = true;
+    if (!state.feedbackModalRefs) {
+      modalRootEl.innerHTML = createFeedbackModalHtml();
+      cacheFeedbackModalRefs();
+    }
+    syncFeedbackModalDom({
+      draft: String(app.ui.feedbackDraft || ""),
+      focusInput: options.focusInput !== false
+    });
+    syncBackupStatusDom();
+    return true;
+  }
+
+  function closeFeedbackModal(options = {}) {
+    app.ui.feedbackModalOpen = false;
+    if (options.clearDraft) {
+      app.ui.feedbackDraft = "";
+    }
+    state.feedbackModalRefs = null;
+    if (modalRootEl) {
+      modalRootEl.innerHTML = "";
+    }
+  }
+
   function render() {
     updateHeaderButtons();
+    updateTeacherHeaderActions();
     const displayFreeze = app.ui.displayFreeze;
 
     if (app.view === "teacher-rewards") {
@@ -688,6 +1014,12 @@
 
     if (displayFreeze) {
       app.ui.displayFreeze = false;
+    }
+
+    if (app.view === "teacher-dashboard" && app.auth.teacher && app.ui.feedbackModalOpen) {
+      openFeedbackModal({ focusInput: false });
+    } else {
+      closeFeedbackModal();
     }
   }
 
@@ -822,7 +1154,7 @@
     const selectedIds = getBulkSelectedStudentIds();
     const selectedIdSet = new Set(selectedIds);
     const selectedCount = selectedIds.length;
-    const bulkQuickAwardDraft = Number(app.ui.bulkQuickAwardDraft || 0);
+    const bulkPointsDraft = Number(app.ui.bulkPointsDraft || 0);
     const groupNames = getBulkGroupNames();
     const filteredIds = students.map((student) => student.id);
 
@@ -857,18 +1189,6 @@
       <section class="section">
         <div class="section-header">
           <h2>学生列表</h2>
-          <div class="form-actions compact-actions student-list-header-actions">
-            ${selectedCount ? `
-              <button
-                class="${bulkQuickAwardDraft ? "accent" : "ghost"}"
-                data-action="confirm-bulk-quick-award"
-                ${bulkQuickAwardDraft ? "" : "disabled"}
-              >
-                ${bulkQuickAwardDraft ? `确定加分 +${bulkQuickAwardDraft}` : "确定加分"}
-              </button>
-            ` : ""}
-            <button class="primary" data-action="go-dashboard">返回仪表盘</button>
-          </div>
         </div>
         <div class="form-row">
           <div>
@@ -902,9 +1222,9 @@
               <span class="pill">统一给已选学生发放同样的奖励</span>
             </div>
             <div class="form-actions compact-actions">
-              <button class="${bulkQuickAwardDraft === 1 ? "primary" : "ghost"} small" data-action="bulk-quick-award" data-points="1">已选学生 +1</button>
-              <button class="${bulkQuickAwardDraft === 2 ? "primary" : "ghost"} small" data-action="bulk-quick-award" data-points="2">已选学生 +2</button>
-              <button class="${bulkQuickAwardDraft === 5 ? "primary" : "ghost"} small" data-action="bulk-quick-award" data-points="5">已选学生 +5</button>
+              <button class="${bulkPointsDraft === 1 ? "primary" : "ghost"} small" data-action="bulk-quick-award" data-points="1">已选学生 +1</button>
+              <button class="${bulkPointsDraft === 2 ? "primary" : "ghost"} small" data-action="bulk-quick-award" data-points="2">已选学生 +2</button>
+              <button class="${bulkPointsDraft === 5 ? "primary" : "ghost"} small" data-action="bulk-quick-award" data-points="5">已选学生 +5</button>
             </div>
             <form data-action="bulk-award">
               <div class="form-row">
@@ -1065,6 +1385,7 @@
           <span class="pill">最近一次备份：${escapeHtml(getLastBackupText())}</span>
         </div>
         <button class="primary" data-action="export-data">立即备份</button>
+        ${renderBackupConfirmHint()}
       </section>
 
       <section class="section">
@@ -1079,7 +1400,6 @@
           </div>
           <div class="form-actions">
             <button class="accent" type="submit">导入并覆盖</button>
-            <button class="ghost" type="button" data-action="go-dashboard">返回仪表盘</button>
           </div>
         </form>
       </section>
@@ -1126,7 +1446,6 @@
           <p class="field-hint">${PIN_HELP_TEXT}</p>
           <div class="form-actions">
             <button class="primary" type="submit">更新 PIN</button>
-            <button class="ghost" type="button" data-action="go-dashboard">返回仪表盘</button>
           </div>
         </form>
       </section>
@@ -1236,7 +1555,6 @@
         <section class="section">
           <div class="section-header">
             <h2>班会喂养模式</h2>
-            <button class="primary" data-action="go-dashboard">返回教师模式</button>
           </div>
           <p class="notice">当前没有进行中的班会喂养会话，请从教师首页重新开启。</p>
         </section>
@@ -1786,31 +2104,42 @@
     if (app.data.students.length > 0) return "";
 
     return `
-      <section class="section">
+      <section class="section setup-checklist-section">
         <div class="section-header">
-          <h2>首次使用 3 步</h2>
+          <h2>初始步骤</h2>
           <span class="pill">先完成一次班级初始化</span>
         </div>
-        <div class="grid cols-3">
-          <div class="card task-card">
-            <span class="badge">第 1 步</span>
+        <div class="grid cols-3 setup-checklist-grid">
+          <div class="card task-card setup-task-card">
+            <span class="badge setup-step-badge">第 1 步</span>
             <h3>导入学生名单</h3>
-            <p>推荐先从 CSV 导入，省去逐个录入的时间。</p>
-            <button class="primary" data-action="go-import">去导入</button>
+            <p>推荐优先使用 CSV 批量导入；如果暂时没有表格，也可以先进入学生管理手动逐个添加。</p>
+            <div class="form-actions setup-task-actions">
+              <button class="primary setup-task-button" type="button" data-action="pick-students-csv">去导入</button>
+              <button class="ghost setup-task-button" type="button" data-action="go-students">学生管理</button>
+            </div>
+            <input
+              class="setup-file-input"
+              type="file"
+              name="quickStudentCsv"
+              accept=".csv,text/csv"
+              tabindex="-1"
+              aria-hidden="true"
+            />
           </div>
-          <div class="card task-card">
-            <span class="badge">第 2 步</span>
+          <div class="card task-card setup-task-card">
+            <span class="badge setup-step-badge">第 2 步</span>
             <h3>检查学生列表</h3>
             <p>确认姓名、座号/学号、分组都正确。</p>
-            <button class="ghost" data-action="go-students">查看学生</button>
+            <button class="ghost setup-task-button" data-action="go-students">查看学生</button>
           </div>
-          <div class="card task-card">
-            <span class="badge">第 3 步</span>
+          <div class="card task-card setup-task-card">
+            <span class="badge setup-step-badge">第 3 步</span>
             <h3>开始课堂使用</h3>
             <p>可以先在学生管理里给一位学生加分，再进入班会喂养模式体验首次重新领养与喂养。</p>
-            <div class="form-actions">
-              <button class="ghost" data-action="go-students">学生管理</button>
-              <button class="ghost" data-action="go-supervised-feed">班会喂养</button>
+            <div class="form-actions setup-task-actions">
+              <button class="ghost setup-task-button" data-action="go-students">学生管理</button>
+              <button class="ghost setup-task-button" data-action="go-supervised-feed">班会喂养</button>
             </div>
           </div>
         </div>
@@ -1822,6 +2151,7 @@
     const recentLedger = app.data.ledger.slice().sort((a, b) => b.timestamp - a.timestamp).slice(0, 8);
     return `
       ${renderBackupReminder()}
+      ${renderDataSafetySection()}
       ${renderSetupChecklist()}
       <section class="section">
         <h2>教师仪表盘</h2>
@@ -1850,14 +2180,12 @@
         </div>
       </section>
 
-      ${renderAwardBatchSection({ title: "近 7 天加分记录", limit: 6 })}
+      ${renderAwardBatchSection({ title: "近 7 天加分记录" })}
 
       <section class="section">
         <h2>最近流水</h2>
         ${renderLedgerTable(recentLedger)}
       </section>
-
-      ${renderFeedbackModal()}
     `;
   }
 
@@ -1866,9 +2194,8 @@
     isValidPin,
     getAuthErrorMessage,
     updateAuthError,
-    clearBulkQuickAwardDraft,
-    resetQuickAwardDrafts,
-    setBulkQuickAwardDraft,
+    clearBulkPointsDraft,
+    toggleBulkPointsDraft,
     setView,
     setModeIndicator,
     logoutTeacher,
@@ -1891,6 +2218,10 @@
     getLastBackupText,
     shouldShowBackupReminder,
     renderBackupReminder,
+    syncBackupStatusDom,
+    openFeedbackModal,
+    closeFeedbackModal,
+    syncFeedbackModalDom,
     renderSetupChecklist,
     formatEffects,
     renderXpProgress,

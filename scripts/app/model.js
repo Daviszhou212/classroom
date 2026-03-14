@@ -143,126 +143,263 @@
     if (!normalizedEntry.batchId) {
       delete normalizedEntry.batchId;
     }
+    if (typeof normalizedEntry.awardEntryId === "string") {
+      normalizedEntry.awardEntryId = normalizedEntry.awardEntryId.trim();
+    }
+    if (!normalizedEntry.awardEntryId) {
+      delete normalizedEntry.awardEntryId;
+    }
     return normalizedEntry;
   }
 
-  function normalizeAwardBatch(batch) {
-    if (!batch || typeof batch !== "object") {
+  function makeLegacyAwardEntryId(batchId, studentId, index = 0) {
+    const safeBatchId = String(batchId || "legacy-batch").trim() || "legacy-batch";
+    const safeStudentId = String(studentId || index).trim() || String(index);
+    return `legacy-award-entry:${safeBatchId}:${safeStudentId}`;
+  }
+
+  function normalizeAwardBatchEntry(entry, defaults = {}) {
+    if (!entry || typeof entry !== "object") {
       return null;
     }
 
-    const id = typeof batch.id === "string" ? batch.id.trim() : "";
+    const studentId = String((entry.studentId ?? defaults.studentId) || "").trim();
+    const points = Math.floor(Number(entry.points ?? entry.deltaPoints ?? defaults.points) || 0);
+    const createdAt = Number(entry.createdAt ?? entry.timestamp ?? defaults.createdAt) || 0;
+    const rawRevocableUntil = Number(entry.revocableUntil ?? defaults.revocableUntil) || 0;
+    const id =
+      (typeof entry.id === "string" && entry.id.trim()) ||
+      (typeof entry.awardEntryId === "string" && entry.awardEntryId.trim()) ||
+      defaults.id ||
+      "";
+
+    if (!id || !studentId || points <= 0 || !createdAt) {
+      return null;
+    }
+
+    return {
+      id,
+      studentId,
+      points,
+      reason: String(entry.reason ?? defaults.reason ?? "加分").trim() || "加分",
+      createdAt,
+      revocableUntil: rawRevocableUntil >= createdAt ? rawRevocableUntil : createdAt + AWARD_REVOCATION_WINDOW,
+      revokedAt: Number.isFinite(Number(entry.revokedAt)) ? Number(entry.revokedAt) : null,
+      revokeReason: String(entry.revokeReason || defaults.revokeReason || "").trim()
+    };
+  }
+
+  function normalizeAwardBatchEntries(entries, defaults = {}) {
+    const seenIds = new Set();
+
+    return (Array.isArray(entries) ? entries : [])
+      .map((entry, index) => {
+        const studentId = String((entry && entry.studentId) || "").trim();
+        return normalizeAwardBatchEntry(entry, {
+          ...defaults,
+          id: defaults.idFactory ? defaults.idFactory(studentId, index) : defaults.id
+        });
+      })
+      .filter((entry) => {
+        if (!entry || seenIds.has(entry.id)) {
+          return false;
+        }
+        seenIds.add(entry.id);
+        return true;
+      });
+  }
+
+  function findMatchingAwardRevokeEntry(revokeEntries, awardEntry) {
+    if (!Array.isArray(revokeEntries) || !awardEntry) {
+      return null;
+    }
+
+    return revokeEntries.find((entry) => {
+      if (!entry) return false;
+      if (entry.awardEntryId && entry.awardEntryId === awardEntry.id) {
+        return true;
+      }
+      return (
+        String(entry.studentId || "").trim() === awardEntry.studentId &&
+        Math.abs(Math.floor(Number(entry.deltaPoints) || 0)) === awardEntry.points
+      );
+    }) || null;
+  }
+
+  function buildAwardEntriesFromLegacyBatch(batch, ledger = []) {
+    const batchId = typeof batch.id === "string" ? batch.id.trim() : "";
+    const awardEntries = (Array.isArray(ledger) ? ledger : [])
+      .filter(
+        (entry) =>
+          entry &&
+          entry.type === "award" &&
+          String(entry.batchId || "").trim() === batchId &&
+          Number(entry.deltaPoints) > 0
+      )
+      .slice()
+      .sort((a, b) => Number(a.timestamp) - Number(b.timestamp));
+    const revokeEntries = (Array.isArray(ledger) ? ledger : []).filter(
+      (entry) => entry && entry.type === "award_revoke" && String(entry.batchId || "").trim() === batchId
+    );
+
+    if (awardEntries.length) {
+      return normalizeAwardBatchEntries(
+        awardEntries.map((entry, index) => {
+          const id =
+            (typeof entry.awardEntryId === "string" && entry.awardEntryId.trim()) ||
+            (typeof entry.id === "string" && entry.id.trim()) ||
+            makeLegacyAwardEntryId(batchId, entry.studentId, index);
+          const revokeEntry = findMatchingAwardRevokeEntry(revokeEntries, {
+            id,
+            studentId: String(entry.studentId || "").trim(),
+            points: Math.floor(Number(entry.deltaPoints) || 0)
+          });
+          return {
+            id,
+            studentId: entry.studentId,
+            points: entry.deltaPoints,
+            reason: entry.reason || batch.reason,
+            createdAt: entry.timestamp,
+            revocableUntil: batch.revocableUntil,
+            revokedAt: revokeEntry ? Number(revokeEntry.timestamp) || Number(batch.revokedAt) || null : Number(batch.revokedAt) || null,
+            revokeReason: revokeEntry ? String(revokeEntry.reason || batch.revokeReason || "").trim() : String(batch.revokeReason || "").trim()
+          };
+        })
+      );
+    }
+
     const studentIds = Array.isArray(batch.studentIds)
       ? [...new Set(batch.studentIds.map((studentId) => String(studentId || "").trim()).filter(Boolean))]
       : [];
     const points = Math.floor(Number(batch.points) || 0);
     const createdAt = Number(batch.createdAt) || 0;
     const rawRevocableUntil = Number(batch.revocableUntil) || 0;
+    const revokedAt = Number(batch.revokedAt) || null;
+    const revokeReason = String(batch.revokeReason || "").trim();
 
-    if (!id || !studentIds.length || points <= 0 || !createdAt) {
+    return normalizeAwardBatchEntries(
+      studentIds.map((studentId, index) => ({
+        id: makeLegacyAwardEntryId(batchId, studentId, index),
+        studentId,
+        points,
+        reason: batch.reason,
+        createdAt,
+        revocableUntil: rawRevocableUntil,
+        revokedAt,
+        revokeReason
+      }))
+    );
+  }
+
+  function normalizeAwardBatch(batch, ledger = []) {
+    if (!batch || typeof batch !== "object") {
+      return null;
+    }
+
+    const id = typeof batch.id === "string" ? batch.id.trim() : "";
+    const fallbackCreatedAt = Number(batch.createdAt) || 0;
+    const fallbackReason = String(batch.reason || "加分").trim() || "加分";
+    const entries = Array.isArray(batch.entries)
+      ? normalizeAwardBatchEntries(batch.entries, {
+          createdAt: fallbackCreatedAt,
+          reason: fallbackReason
+        })
+      : buildAwardEntriesFromLegacyBatch(batch, ledger);
+
+    if (!id || !entries.length) {
+      return null;
+    }
+
+    const createdAt =
+      fallbackCreatedAt ||
+      entries.reduce(
+        (earliest, entry) => Math.min(earliest, Number(entry.createdAt) || Number.MAX_SAFE_INTEGER),
+        Number.MAX_SAFE_INTEGER
+      );
+    const uniqueReasons = [...new Set(entries.map((entry) => String(entry.reason || "").trim()).filter(Boolean))];
+
+    if (!createdAt || !Number.isFinite(createdAt)) {
       return null;
     }
 
     return {
       id,
-      studentIds,
-      points,
-      reason: String(batch.reason || "加分").trim() || "加分",
+      reason: uniqueReasons.length === 1 ? uniqueReasons[0] : fallbackReason,
       createdAt,
-      revocableUntil: rawRevocableUntil >= createdAt ? rawRevocableUntil : createdAt + AWARD_REVOCATION_WINDOW,
-      revokedAt: Number.isFinite(Number(batch.revokedAt)) ? Number(batch.revokedAt) : null,
-      revokeReason: String(batch.revokeReason || "").trim()
+      entries
     };
   }
 
-  function createAwardBatchFromLedgerEntries(entries) {
-    if (!Array.isArray(entries) || !entries.length) {
-      return [];
-    }
-
-    const firstEntry = entries[0];
-    const points = Math.floor(Number(firstEntry.deltaPoints) || 0);
-    const reason = String(firstEntry.reason || "加分").trim() || "加分";
-    const createdAt = entries.reduce(
-      (earliest, entry) => Math.min(earliest, Number(entry.timestamp) || Number.MAX_SAFE_INTEGER),
-      Number.MAX_SAFE_INTEGER
-    );
-    const studentIds = [...new Set(entries.map((entry) => String(entry.studentId || "").trim()).filter(Boolean))];
-    const samePoints = entries.every((entry) => Math.floor(Number(entry.deltaPoints) || 0) === points);
-    const sameReason = entries.every((entry) => (String(entry.reason || "加分").trim() || "加分") === reason);
-
-    if (!studentIds.length || points <= 0 || !createdAt) {
-      return [];
-    }
-
-    if (!samePoints || !sameReason) {
-      return entries.flatMap((entry) => {
-        const entryStudentId = String(entry.studentId || "").trim();
-        const entryPoints = Math.floor(Number(entry.deltaPoints) || 0);
-        const entryCreatedAt = Number(entry.timestamp) || 0;
-        if (!entryStudentId || entryPoints <= 0 || !entryCreatedAt) {
-          return [];
-        }
-        return [{
-          id: entry.batchId || entry.id || makeId("award-batch"),
-          studentIds: [entryStudentId],
-          points: entryPoints,
-          reason: String(entry.reason || "加分").trim() || "加分",
-          createdAt: entryCreatedAt,
-          revocableUntil: entryCreatedAt + AWARD_REVOCATION_WINDOW,
-          revokedAt: null,
-          revokeReason: ""
-        }];
-      });
-    }
-
-    return [{
-      id: firstEntry.batchId || firstEntry.id || makeId("award-batch"),
-      studentIds,
-      points,
-      reason,
-      createdAt,
-      revocableUntil: createdAt + AWARD_REVOCATION_WINDOW,
-      revokedAt: null,
-      revokeReason: ""
-    }];
-  }
-
   function buildAwardBatchesFromLedger(ledger) {
-    const now = Date.now();
-    const windowStart = now - AWARD_REVOCATION_WINDOW;
-    const recentAwardEntries = (Array.isArray(ledger) ? ledger : [])
-      .map((entry) => normalizeLedgerEntry(entry))
-      .filter(
-        (entry) =>
-          entry.type === "award" &&
-          Number(entry.deltaPoints) > 0 &&
-          Number(entry.timestamp) >= windowStart
-      );
+    const normalizedLedger = (Array.isArray(ledger) ? ledger : []).map((entry) => normalizeLedgerEntry(entry));
     const groupedEntries = new Map();
 
-    recentAwardEntries.forEach((entry) => {
-      const groupKey = entry.batchId || entry.id;
-      if (!groupKey) return;
-      if (!groupedEntries.has(groupKey)) {
-        groupedEntries.set(groupKey, []);
-      }
-      groupedEntries.get(groupKey).push(entry);
-    });
+    normalizedLedger
+      .filter((entry) => entry.type === "award" && Number(entry.deltaPoints) > 0)
+      .forEach((entry) => {
+        const batchId = String(entry.batchId || entry.id || "").trim();
+        if (!batchId) return;
+        if (!groupedEntries.has(batchId)) {
+          groupedEntries.set(batchId, []);
+        }
+        groupedEntries.get(batchId).push(entry);
+      });
 
     const batches = [];
-    groupedEntries.forEach((entries) => {
-      batches.push(...createAwardBatchFromLedgerEntries(entries));
+    groupedEntries.forEach((entries, batchId) => {
+      const sortedEntries = entries.slice().sort((a, b) => Number(a.timestamp) - Number(b.timestamp));
+      const createdAt = sortedEntries.reduce(
+        (earliest, entry) => Math.min(earliest, Number(entry.timestamp) || Number.MAX_SAFE_INTEGER),
+        Number.MAX_SAFE_INTEGER
+      );
+      const reasons = [...new Set(sortedEntries.map((entry) => String(entry.reason || "加分").trim() || "加分"))];
+      const revokeEntries = normalizedLedger.filter(
+        (entry) => entry.type === "award_revoke" && String(entry.batchId || "").trim() === batchId
+      );
+      const normalizedEntries = normalizeAwardBatchEntries(
+        sortedEntries.map((entry, index) => {
+          const entryId =
+            (typeof entry.awardEntryId === "string" && entry.awardEntryId.trim()) ||
+            (typeof entry.id === "string" && entry.id.trim()) ||
+            makeLegacyAwardEntryId(batchId, entry.studentId, index);
+          const revokeEntry = findMatchingAwardRevokeEntry(revokeEntries, {
+            id: entryId,
+            studentId: String(entry.studentId || "").trim(),
+            points: Math.floor(Number(entry.deltaPoints) || 0)
+          });
+          return {
+            id: entryId,
+            studentId: entry.studentId,
+            points: entry.deltaPoints,
+            reason: entry.reason,
+            createdAt: entry.timestamp,
+            revocableUntil: Number(entry.timestamp) + AWARD_REVOCATION_WINDOW,
+            revokedAt: revokeEntry ? Number(revokeEntry.timestamp) || null : null,
+            revokeReason: revokeEntry ? String(revokeEntry.reason || "").trim() : ""
+          };
+        })
+      );
+
+      if (!normalizedEntries.length || !createdAt || !Number.isFinite(createdAt)) {
+        return;
+      }
+
+      batches.push({
+        id: batchId,
+        reason: reasons.length === 1 ? reasons[0] : "批量加分",
+        createdAt,
+        entries: normalizedEntries
+      });
     });
 
-    return normalizeAwardBatches(batches);
+    return normalizeAwardBatches(batches, normalizedLedger);
   }
 
-  function normalizeAwardBatches(batches) {
+  function normalizeAwardBatches(batches, ledger = []) {
     const seenIds = new Set();
 
     return (Array.isArray(batches) ? batches : [])
-      .map((batch) => normalizeAwardBatch(batch))
+      .map((batch) => normalizeAwardBatch(batch, ledger))
       .filter((batch) => {
         if (!batch || seenIds.has(batch.id)) {
           return false;
@@ -271,6 +408,50 @@
         return true;
       })
       .sort((a, b) => b.createdAt - a.createdAt);
+  }
+
+  function backfillAwardEntryIdsInLedger(ledger, awardBatches) {
+    const normalizedLedger = Array.isArray(ledger) ? ledger : [];
+    const awardEntries = normalizedLedger.filter((entry) => entry && entry.type === "award");
+    const revokeEntries = normalizedLedger.filter((entry) => entry && entry.type === "award_revoke");
+    const matchedAwardEntries = new Set();
+    const matchedRevokeEntries = new Set();
+
+    (Array.isArray(awardBatches) ? awardBatches : []).forEach((batch) => {
+      (Array.isArray(batch.entries) ? batch.entries : []).forEach((awardEntry) => {
+        const awardLedgerMatch = awardEntries.find((entry) => {
+          if (matchedAwardEntries.has(entry)) return false;
+          if (entry.awardEntryId && entry.awardEntryId === awardEntry.id) return true;
+          return (
+            String(entry.batchId || "").trim() === batch.id &&
+            String(entry.studentId || "").trim() === awardEntry.studentId &&
+            Math.floor(Number(entry.deltaPoints) || 0) === awardEntry.points
+          );
+        });
+
+        if (awardLedgerMatch) {
+          awardLedgerMatch.awardEntryId = awardEntry.id;
+          matchedAwardEntries.add(awardLedgerMatch);
+        }
+
+        const revokeLedgerMatch = revokeEntries.find((entry) => {
+          if (matchedRevokeEntries.has(entry)) return false;
+          if (entry.awardEntryId && entry.awardEntryId === awardEntry.id) return true;
+          return (
+            String(entry.batchId || "").trim() === batch.id &&
+            String(entry.studentId || "").trim() === awardEntry.studentId &&
+            Math.abs(Math.floor(Number(entry.deltaPoints) || 0)) === awardEntry.points
+          );
+        });
+
+        if (revokeLedgerMatch) {
+          revokeLedgerMatch.awardEntryId = awardEntry.id;
+          matchedRevokeEntries.add(revokeLedgerMatch);
+        }
+      });
+    });
+
+    return normalizedLedger;
   }
 
   function normalizeData(data) {
@@ -303,9 +484,11 @@
 
     normalized.students = normalized.students.map((student) => normalizeStudent(student, normalized.catalog));
     normalized.ledger = normalized.ledger.map((entry) => normalizeLedgerEntry(entry));
-    normalized.awardBatches = Array.isArray(data.awardBatches)
-      ? normalizeAwardBatches(data.awardBatches)
-      : buildAwardBatchesFromLedger(normalized.ledger);
+    normalized.awardBatches =
+      Array.isArray(data.awardBatches) && data.awardBatches.length > 0
+        ? normalizeAwardBatches(data.awardBatches, normalized.ledger)
+        : buildAwardBatchesFromLedger(normalized.ledger);
+    backfillAwardEntryIdsInLedger(normalized.ledger, normalized.awardBatches);
 
     const feedHistoryStudentIds = new Set(
       normalized.ledger.filter((entry) => entry.type === "feed" && entry.studentId).map((entry) => entry.studentId)
@@ -329,7 +512,11 @@
   function syncData() {
     app.data.students = app.data.students.map((student) => normalizeStudent(student, app.data.catalog));
     app.data.ledger = app.data.ledger.map((entry) => normalizeLedgerEntry(entry));
-    app.data.awardBatches = normalizeAwardBatches(app.data.awardBatches);
+    app.data.awardBatches =
+      Array.isArray(app.data.awardBatches) && app.data.awardBatches.length > 0
+        ? normalizeAwardBatches(app.data.awardBatches, app.data.ledger)
+        : buildAwardBatchesFromLedger(app.data.ledger);
+    backfillAwardEntryIdsInLedger(app.data.ledger, app.data.awardBatches);
     app.data.meta = {
       ...DEFAULT_DATA.meta,
       ...(app.data.meta || {})
@@ -675,9 +862,20 @@
     return app.data.awardBatches.find((batch) => batch.id === batchId) || null;
   }
 
+  function getAwardBatchEntryById(batchOrBatchId, entryId) {
+    const batch = typeof batchOrBatchId === "string" ? getAwardBatchById(batchOrBatchId) : batchOrBatchId;
+    if (!batch || !Array.isArray(batch.entries)) {
+      return null;
+    }
+    return batch.entries.find((entry) => entry.id === entryId) || null;
+  }
+
   function getOpenAwardBatches() {
     return app.data.awardBatches
-      .filter((batch) => !batch.revokedAt)
+      .filter((batch) => {
+        const summary = getAwardBatchSummary(batch);
+        return summary.revokedCount < summary.totalCount;
+      })
       .slice()
       .sort((a, b) => b.createdAt - a.createdAt);
   }
@@ -738,6 +936,117 @@
       return "已过期";
     }
     return `还剩 ${formatRemainingTime(remainingMs)}`;
+  }
+
+  function getAwardEntryStatus(entry, now = Date.now()) {
+    if (!entry) {
+      return { code: "expired", label: "已过期" };
+    }
+    if (entry.revokedAt) {
+      return { code: "revoked", label: "已撤销" };
+    }
+    if (now > entry.revocableUntil) {
+      return { code: "expired", label: "已过期" };
+    }
+
+    const student = getStudentById(entry.studentId);
+    if (!student) {
+      return { code: "missing_student", label: "对象已删除" };
+    }
+    if ((student.points || 0) < entry.points) {
+      return { code: "insufficient_points", label: "积分不足" };
+    }
+    return { code: "revocable", label: "可撤销" };
+  }
+
+  function getAwardBatchSummary(batch, now = Date.now()) {
+    const summary = {
+      totalCount: 0,
+      revokedCount: 0,
+      revocableCount: 0,
+      expiredCount: 0,
+      missingCount: 0,
+      insufficientCount: 0,
+      code: "expired",
+      label: "已过期"
+    };
+
+    if (!batch || !Array.isArray(batch.entries) || !batch.entries.length) {
+      return summary;
+    }
+
+    batch.entries.forEach((entry) => {
+      summary.totalCount += 1;
+      const status = getAwardEntryStatus(entry, now);
+      if (status.code === "revoked") summary.revokedCount += 1;
+      if (status.code === "revocable") summary.revocableCount += 1;
+      if (status.code === "expired") summary.expiredCount += 1;
+      if (status.code === "missing_student") summary.missingCount += 1;
+      if (status.code === "insufficient_points") summary.insufficientCount += 1;
+    });
+
+    if (summary.revocableCount > 0) {
+      summary.code = "revocable";
+      summary.label = `可撤销 ${summary.revocableCount} 条`;
+      return summary;
+    }
+    if (summary.insufficientCount > 0) {
+      summary.code = "insufficient_points";
+      summary.label = `积分不足 ${summary.insufficientCount} 条`;
+      return summary;
+    }
+    if (summary.missingCount > 0) {
+      summary.code = "missing_student";
+      summary.label = `对象已删除 ${summary.missingCount} 条`;
+      return summary;
+    }
+    if (summary.expiredCount > 0) {
+      summary.code = "expired";
+      summary.label = `已过期 ${summary.expiredCount} 条`;
+      return summary;
+    }
+
+    summary.code = "revoked";
+    summary.label = "已撤销";
+    return summary;
+  }
+
+  function getAwardBatchStatus(batch, now = Date.now()) {
+    const summary = getAwardBatchSummary(batch, now);
+    return {
+      code: summary.code,
+      label: summary.label
+    };
+  }
+
+  function getAwardEntryRemainingText(entry, now = Date.now()) {
+    if (!entry || entry.revokedAt) {
+      return "已撤销";
+    }
+    const remainingMs = entry.revocableUntil - now;
+    if (remainingMs < 0) {
+      return "已过期";
+    }
+    return `剩余 ${formatRemainingTime(remainingMs)}`;
+  }
+
+  function getAwardBatchRemainingText(batch, now = Date.now()) {
+    if (!batch || !Array.isArray(batch.entries) || !batch.entries.length) {
+      return "已撤销";
+    }
+
+    const openEntries = batch.entries.filter((entry) => !entry.revokedAt);
+    if (!openEntries.length) {
+      return "已撤销";
+    }
+
+    const remainingMs = Math.max(
+      ...openEntries.map((entry) => Number(entry.revocableUntil) - now).filter((value) => Number.isFinite(value))
+    );
+    if (remainingMs < 0) {
+      return "已过期";
+    }
+    return `剩余 ${formatRemainingTime(remainingMs)}`;
   }
 
   function resetBulkAwardDrafts() {
@@ -833,9 +1142,13 @@
     addLedgerEntry,
     addAwardBatch,
     getAwardBatchById,
+    getAwardBatchEntryById,
     getOpenAwardBatches,
     getFeedbackEntries,
+    getAwardBatchSummary,
     getAwardBatchStatus,
+    getAwardEntryStatus,
+    getAwardEntryRemainingText,
     getAwardBatchRemainingText,
     resetBulkAwardDrafts,
     clearBulkSelection,

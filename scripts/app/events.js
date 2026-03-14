@@ -1,9 +1,9 @@
 (function (window) {
   const CP = window.ClassroomPetApp;
   const { constants, state, dom, utils, model, views, actions } = CP;
-  const { DEFAULT_DATA, SEAT_LABEL, PIN_RULE_LABEL, QUICK_AWARD_PRESETS, RECOVERY_CODE } = constants;
+  const { DEFAULT_DATA, SEAT_LABEL, PIN_RULE_LABEL, RECOVERY_CODE } = constants;
   const { app } = state;
-  const { mainEl } = dom;
+  const { mainEl, modalRootEl } = dom;
   const { clone, clamp, showToast } = utils;
   const {
     loadData,
@@ -25,9 +25,8 @@
     setAuthError,
     updateAuthError,
     isValidPin,
-    clearBulkQuickAwardDraft,
-    resetQuickAwardDrafts,
-    setBulkQuickAwardDraft,
+    clearBulkPointsDraft,
+    toggleBulkPointsDraft,
     setView,
     logoutTeacher,
     startSupervisedFeedSession,
@@ -40,15 +39,21 @@
     stepDisplayFocus,
     triggerDisplayInteraction,
     shouldIgnoreDisplayHotkeyTarget,
+    openFeedbackModal,
+    closeFeedbackModal,
+    syncBackupStatusDom,
+    syncFeedbackModalDom,
     render
   } = views;
   const {
+    initFeedbackFileSession,
     exportData,
     confirmWithAutoBackup,
     hashPin,
     getTeacherPinState,
     bulkAwardStudents,
-    revokeAwardBatch,
+    revokeAwardEntry,
+    selectFeedbackSaveFile,
     submitFeedback,
     buyFoodForStudent,
     feedStudent,
@@ -61,7 +66,9 @@
     document.getElementById("homeBtn").addEventListener("click", () => setView("home"));
     document.getElementById("teacherBtn").addEventListener("click", () => setView("teacher-dashboard"));
     document.getElementById("displayBtn").addEventListener("click", () => setView("display-view"));
+    const teacherHomeBtn = document.getElementById("teacherHomeBtn");
     const logoutBtn = document.getElementById("logoutBtn");
+    if (teacherHomeBtn) teacherHomeBtn.addEventListener("click", () => setView("teacher-dashboard"));
     if (logoutBtn) logoutBtn.addEventListener("click", () => logoutTeacher());
 
     mainEl.addEventListener("click", async (event) => {
@@ -96,6 +103,21 @@
           }
           setView("teacher-students");
           break;
+        case "pick-students-csv": {
+          if (!app.auth.teacher) {
+            setView("teacher-dashboard");
+            return;
+          }
+          const setupCard = actionEl.closest(".setup-task-card");
+          const fileInput = setupCard ? setupCard.querySelector('input[name="quickStudentCsv"]') : null;
+          if (!fileInput) {
+            showToast("未找到 CSV 导入入口，请刷新后重试", "warning");
+            return;
+          }
+          fileInput.value = "";
+          fileInput.click();
+          break;
+        }
         case "go-import":
           if (!app.auth.teacher) {
             setView("teacher-dashboard");
@@ -115,8 +137,7 @@
             setView("teacher-dashboard");
             return;
           }
-          app.ui.feedbackModalOpen = true;
-          render();
+          openFeedbackModal();
           break;
         case "go-student":
           setView("student-view");
@@ -124,6 +145,10 @@
         case "go-supervised-feed":
           if (!app.auth.teacher) {
             setView("teacher-dashboard");
+            return;
+          }
+          if (!app.data.students.length) {
+            showToast("当前还没有学生记录，请先添加或导入学生名单", "warning");
             return;
           }
           startSupervisedFeedSession();
@@ -139,7 +164,7 @@
         case "toggle-bulk-student":
           toggleBulkSelectedStudent(actionEl.dataset.id, actionEl.checked);
           if (!getBulkSelectedStudentIds().length) {
-            clearBulkQuickAwardDraft();
+            clearBulkPointsDraft();
           }
           render();
           break;
@@ -157,31 +182,25 @@
           break;
         case "clear-bulk-selection":
           clearBulkSelection();
-          clearBulkQuickAwardDraft();
+          clearBulkPointsDraft();
           render();
           break;
         case "bulk-quick-award": {
           const delta = Number(actionEl.dataset.points || 0);
-          setBulkQuickAwardDraft(delta);
+          toggleBulkPointsDraft(delta);
           render();
           break;
         }
-        case "confirm-bulk-quick-award": {
-          const delta = Number(app.ui.bulkQuickAwardDraft || 0);
-          if (!delta) {
-            showToast("请先选择一个快捷加分值", "warning");
-            return;
-          }
-          const reason = QUICK_AWARD_PRESETS[delta] || "加分";
-          const success = bulkAwardStudents(getBulkSelectedStudentIds(), delta, reason);
-          if (success) {
-            clearBulkQuickAwardDraft();
-          }
+        case "award-batch-prev-page":
+          app.ui.awardBatchPage = Math.max(0, Number(app.ui.awardBatchPage || 0) - 1);
           render();
           break;
-        }
-        case "revoke-award-batch":
-          revokeAwardBatch(actionEl.dataset.id);
+        case "award-batch-next-page":
+          app.ui.awardBatchPage = Number(app.ui.awardBatchPage || 0) + 1;
+          render();
+          break;
+        case "revoke-award-entry":
+          revokeAwardEntry(actionEl.dataset.batchId, actionEl.dataset.entryId);
           render();
           break;
         case "edit-student":
@@ -202,7 +221,7 @@
           app.data.pets = app.data.pets.filter((pet) => pet.studentId !== actionEl.dataset.id);
           setBulkSelectedStudentIds(getBulkSelectedStudentIds().filter((id) => id !== actionEl.dataset.id));
           if (!getBulkSelectedStudentIds().length) {
-            clearBulkQuickAwardDraft();
+            clearBulkPointsDraft();
           }
           saveData();
           render();
@@ -259,10 +278,6 @@
         case "close-display-modal":
           closeDisplayFocus();
           break;
-        case "close-feedback-modal":
-          app.ui.feedbackModalOpen = false;
-          render();
-          break;
         case "display-prev-student":
           stepDisplayFocus(-1);
           break;
@@ -297,11 +312,11 @@
             studentSearch: "",
             editingStudentId: null,
             studentSelectedId: null,
-            bulkQuickAwardDraft: "",
             bulkSelectedStudentIds: [],
             bulkPointsDraft: "",
             bulkReasonTemplateDraft: "",
             bulkReasonCustomDraft: "",
+            awardBatchPage: 0,
             displaySearch: "",
             displayPage: 0,
             displaySelectedId: null,
@@ -314,9 +329,9 @@
             feedbackModalOpen: false,
             feedbackDraft: ""
           };
+          closeFeedbackModal({ clearDraft: true });
           app.auth.teacher = false;
           sessionStorage.removeItem("teacherAuthed");
-          resetQuickAwardDrafts();
           saveData();
           showToast("数据已清空", "warning");
           setView("home");
@@ -347,11 +362,76 @@
       }
     });
 
+    if (modalRootEl) {
+      modalRootEl.addEventListener("click", async (event) => {
+        const actionEl = event.target.closest("[data-action]");
+        if (!actionEl) return;
+        switch (actionEl.dataset.action) {
+          case "close-feedback-modal":
+            closeFeedbackModal();
+            break;
+          case "feedback-select-file": {
+            const result = await selectFeedbackSaveFile();
+            syncFeedbackModalDom({ draft: app.ui.feedbackDraft });
+            if (result.ok) {
+              showToast(`已绑定反馈文件：${result.fileName}`, "info");
+            } else if (result.status === "unsupported") {
+              showToast("当前环境不支持持续写入同一文件，提交时会自动下载 JSONL 文件", "warning");
+            } else if (result.status === "error") {
+              showToast("选择保存文件失败，将在提交时自动回退为下载", "warning");
+            }
+            break;
+          }
+          case "feedback-backup-now":
+            exportData();
+            syncBackupStatusDom();
+            syncFeedbackModalDom({ draft: app.ui.feedbackDraft });
+            break;
+          case "noop":
+            break;
+          default:
+            break;
+        }
+      });
+
+      modalRootEl.addEventListener("submit", async (event) => {
+        const form = event.target;
+        if (form.dataset.action !== "submit-feedback") return;
+        event.preventDefault();
+
+        if (!app.auth.teacher) {
+          closeFeedbackModal();
+          setView("teacher-dashboard");
+          return;
+        }
+
+        const message = form.feedbackMessage.value;
+        const result = await submitFeedback(message);
+        if (!result.ok) {
+          showToast(result.message, result.type || "warning");
+          app.ui.feedbackDraft = String(message || "");
+          return;
+        }
+
+        app.ui.feedbackDraft = "";
+        showToast(result.message, result.type || "info");
+        syncFeedbackModalDom({
+          draft: "",
+          focusInput: true
+        });
+      });
+
+      modalRootEl.addEventListener("input", (event) => {
+        if (event.target.id === "feedbackMessage") {
+          app.ui.feedbackDraft = event.target.value;
+        }
+      });
+    }
+
     document.addEventListener("keydown", (event) => {
       if (app.ui.feedbackModalOpen && event.key === "Escape") {
         event.preventDefault();
-        app.ui.feedbackModalOpen = false;
-        render();
+        closeFeedbackModal();
         return;
       }
 
@@ -396,26 +476,6 @@
       event.preventDefault();
 
       switch (form.dataset.action) {
-        case "submit-feedback": {
-          if (!app.auth.teacher) {
-            setView("teacher-dashboard");
-            return;
-          }
-          const message = form.feedbackMessage.value;
-          const success = submitFeedback(message);
-          if (!success) {
-            app.ui.feedbackDraft = String(message || "");
-            return;
-          }
-          app.ui.feedbackDraft = "";
-          app.ui.feedbackModalOpen = true;
-          render();
-          requestAnimationFrame(() => {
-            const feedbackInput = document.getElementById("feedbackMessage");
-            if (feedbackInput) feedbackInput.focus();
-          });
-          break;
-        }
         case "set-pin": {
           const pin = form.pin.value.trim();
           if (!updateAuthError(form, { strict: true })) {
@@ -572,7 +632,7 @@
           const reason = form.bulkReasonCustom.value.trim() || form.bulkReasonTemplate.value || "加分";
           const success = bulkAwardStudents(selectedIds, points, reason);
           if (success) {
-            clearBulkQuickAwardDraft();
+            clearBulkPointsDraft();
             form.reset();
           }
           render();
@@ -638,6 +698,7 @@
       }
       if (event.target.id === "bulkPointsDraft") {
         app.ui.bulkPointsDraft = event.target.value;
+        preserveInputFocus("bulkPointsDraft", render);
       }
       if (event.target.id === "bulkReasonCustomDraft") {
         app.ui.bulkReasonCustomDraft = event.target.value;
@@ -651,12 +712,24 @@
         app.ui.displayPage = 0;
         preserveInputFocus("displaySearch", render);
       }
-      if (event.target.id === "feedbackMessage") {
-        app.ui.feedbackDraft = event.target.value;
-      }
     });
 
     mainEl.addEventListener("change", (event) => {
+      if (event.target.name === "quickStudentCsv") {
+        if (!app.auth.teacher) {
+          event.target.value = "";
+          setView("teacher-dashboard");
+          return;
+        }
+        if (!event.target.files.length) {
+          event.target.value = "";
+          return;
+        }
+        // 教师首页第 1 步直接复用现有 CSV 导入逻辑。
+        importStudentsCsv(event.target.files[0]);
+        event.target.value = "";
+        return;
+      }
       if (event.target.id === "bulkReasonTemplateDraft") {
         app.ui.bulkReasonTemplateDraft = event.target.value;
       }
@@ -691,6 +764,7 @@
   function init() {
     app.data = loadData();
     app.auth.teacher = sessionStorage.getItem("teacherAuthed") === "1";
+    initFeedbackFileSession();
     syncData();
     bindEvents();
     render();
