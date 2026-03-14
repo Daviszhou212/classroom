@@ -3,7 +3,7 @@
 
   const constants = {
     STORAGE_KEY: "class-pet-mvp",
-    SEAT_LABEL: "座号/学号",
+    SEAT_LABEL: "学号",
     PIN_RULE_LABEL: "4-8 位字母或数字",
     PIN_HELP_TEXT: "4-8 位字母或数字，建议使用纯数字",
     RECOVERY_CODE: "12152205",
@@ -13,6 +13,7 @@
     FEEDBACK_STORAGE_LIMIT: 50,
     FEEDBACK_PREVIEW_LIMIT: 5,
     FEEDBACK_FILE_DEFAULT_NAME: "class-pet-feedback.jsonl",
+    CLAIM_ROSTER_PAGE_SIZE: 32,
     AWARD_REASON_TEMPLATES: ["课堂表现", "作业完成", "帮助同学", "纪律良好", "积极发言"],
     QUICK_AWARD_PRESETS: {
       1: "课堂表现",
@@ -20,7 +21,7 @@
       5: "今天特别棒！"
     },
     DEFAULT_DATA: {
-      schemaVersion: 8,
+      schemaVersion: 9,
       students: [],
       pets: [],
       ledger: [],
@@ -159,6 +160,9 @@
         bulkPointsDraft: "",
         bulkReasonTemplateDraft: "",
         bulkReasonCustomDraft: "",
+        claimRosterPage: 0,
+        claimDraftPetTypeId: null,
+        claimPendingStudentId: null,
         awardBatchPage: 0,
         displayPage: 0,
         displayPageSize: 16,
@@ -178,7 +182,9 @@
         supervisedFeedSessionActive: false,
         supervisedFeedStudentId: null,
         supervisedFeedVisitedStudentIds: [],
+        supervisedFeedFedStudentIds: [],
         supervisedFeedReAdoptDraftTypeId: null,
+        supervisedFeedReAdoptExpanded: false,
         feedbackModalOpen: false,
         feedbackDraft: ""
       }
@@ -193,11 +199,16 @@
       lastError: ""
     },
     feedbackModalRefs: null,
+    studentSearchRenderTimer: null,
+    displaySearchRenderTimer: null,
     displayMotionResetTimer: null,
-    displayInteractionResetTimer: null
+    displayInteractionResetTimer: null,
+    levelUpCelebrationCleanupTimer: null,
+    levelUpCelebrationLayerEl: null
   };
 
   const dom = {
+    appEl: document.getElementById("app"),
     mainEl: document.getElementById("main"),
     modalRootEl: document.getElementById("modalRoot"),
     toastEl: document.getElementById("toast"),
@@ -242,6 +253,137 @@
     }, 2400);
   }
 
+  function randomBetween(min, max) {
+    return min + Math.random() * (max - min);
+  }
+
+  function prefersReducedMotion() {
+    return Boolean(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+  }
+
+  function ensureLevelUpCelebrationLayer() {
+    if (state.levelUpCelebrationLayerEl && state.levelUpCelebrationLayerEl.isConnected) {
+      return state.levelUpCelebrationLayerEl;
+    }
+
+    const layerEl = document.createElement("div");
+    layerEl.className = "level-up-celebration-layer";
+    layerEl.setAttribute("aria-hidden", "true");
+    (dom.appEl || document.body).appendChild(layerEl);
+    state.levelUpCelebrationLayerEl = layerEl;
+    return layerEl;
+  }
+
+  function clearLevelUpCelebration() {
+    if (state.levelUpCelebrationCleanupTimer) {
+      clearTimeout(state.levelUpCelebrationCleanupTimer);
+      state.levelUpCelebrationCleanupTimer = null;
+    }
+    if (state.levelUpCelebrationLayerEl) {
+      state.levelUpCelebrationLayerEl.replaceChildren();
+    }
+  }
+
+  function getCelebrationOrigin(anchorEl, fallbackEl = dom.mainEl) {
+    const getOriginFromRect = (targetEl, ratioY) => {
+      if (!targetEl || typeof targetEl.getBoundingClientRect !== "function") return null;
+      const rect = targetEl.getBoundingClientRect();
+      if (!rect.width || !rect.height) return null;
+      return {
+        x: rect.left + rect.width / 2,
+        y: rect.top + rect.height * ratioY,
+        size: Math.max(96, Math.min(220, Math.max(rect.width, rect.height)))
+      };
+    };
+
+    return (
+      getOriginFromRect(anchorEl, 0.42) ||
+      getOriginFromRect(fallbackEl, 0.28) || {
+        x: window.innerWidth / 2,
+        y: Math.min(window.innerHeight * 0.35, 280),
+        size: 150
+      }
+    );
+  }
+
+  // 用一次性 DOM 粒子做短暂升级庆祝，避免和主视图重渲染耦合。
+  function buildLevelUpCelebrationBurst(origin) {
+    const burstEl = document.createElement("div");
+    const fragment = document.createDocumentFragment();
+    const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 1280;
+    const compact = viewportWidth <= 768;
+    const streamerCount = compact ? 8 : 12;
+    const sparkCount = compact ? 4 : 6;
+    const palette = ["var(--primary)", "var(--accent)", "var(--success)", "#fff3cf"];
+    const radius = Math.max(56, Math.min(92, origin.size * 0.42));
+
+    burstEl.className = "level-up-celebration-burst";
+    burstEl.style.left = `${origin.x}px`;
+    burstEl.style.top = `${origin.y}px`;
+
+    for (let index = 0; index < streamerCount; index += 1) {
+      const pieceEl = document.createElement("span");
+      const progress = streamerCount === 1 ? 0.5 : index / (streamerCount - 1);
+      const angle = ((-160 + progress * 140) + randomBetween(-8, 8)) * (Math.PI / 180);
+      const midRadius = radius + randomBetween(-12, 14);
+      const midX = Math.cos(angle) * midRadius;
+      const midY = Math.sin(angle) * midRadius - randomBetween(8, 18);
+      const endX = midX + randomBetween(-20, 20);
+      const endY = midY + randomBetween(38, 72);
+
+      pieceEl.className = "level-up-piece level-up-piece--streamer";
+      pieceEl.style.setProperty("--piece-color", palette[index % palette.length]);
+      pieceEl.style.setProperty("--piece-width", `${randomBetween(4, compact ? 6 : 7)}px`);
+      pieceEl.style.setProperty("--piece-height", `${randomBetween(compact ? 18 : 20, compact ? 28 : 34)}px`);
+      pieceEl.style.setProperty("--mid-x", `${midX}px`);
+      pieceEl.style.setProperty("--mid-y", `${midY}px`);
+      pieceEl.style.setProperty("--end-x", `${endX}px`);
+      pieceEl.style.setProperty("--end-y", `${endY}px`);
+      pieceEl.style.setProperty("--start-rotate", `${randomBetween(-48, 48)}deg`);
+      pieceEl.style.setProperty("--mid-rotate", `${randomBetween(-140, 140)}deg`);
+      pieceEl.style.setProperty("--end-rotate", `${randomBetween(-220, 220)}deg`);
+      pieceEl.style.setProperty("--piece-duration", `${Math.round(randomBetween(720, 920))}ms`);
+      pieceEl.style.setProperty("--piece-delay", `${Math.round(randomBetween(0, 80))}ms`);
+      fragment.appendChild(pieceEl);
+    }
+
+    for (let index = 0; index < sparkCount; index += 1) {
+      const pieceEl = document.createElement("span");
+      const progress = sparkCount === 1 ? 0.5 : index / (sparkCount - 1);
+      const angle = ((-172 + progress * 164) + randomBetween(-10, 10)) * (Math.PI / 180);
+      const endRadius = radius * randomBetween(0.52, 0.82);
+      const endX = Math.cos(angle) * endRadius;
+      const endY = Math.sin(angle) * endRadius + randomBetween(4, 28);
+
+      pieceEl.className = "level-up-piece level-up-piece--spark";
+      pieceEl.style.setProperty("--piece-color", palette[(index + 1) % palette.length]);
+      pieceEl.style.setProperty("--piece-size", `${randomBetween(compact ? 10 : 12, compact ? 16 : 20)}px`);
+      pieceEl.style.setProperty("--end-x", `${endX}px`);
+      pieceEl.style.setProperty("--end-y", `${endY}px`);
+      pieceEl.style.setProperty("--piece-duration", `${Math.round(randomBetween(560, 760))}ms`);
+      pieceEl.style.setProperty("--piece-delay", `${Math.round(randomBetween(30, 140))}ms`);
+      fragment.appendChild(pieceEl);
+    }
+
+    burstEl.appendChild(fragment);
+    return burstEl;
+  }
+
+  function playLevelUpCelebration(options = {}) {
+    if (prefersReducedMotion()) {
+      return false;
+    }
+
+    const layerEl = ensureLevelUpCelebrationLayer();
+    const origin = getCelebrationOrigin(options.anchorEl, options.fallbackEl);
+    clearLevelUpCelebration();
+    layerEl.appendChild(buildLevelUpCelebrationBurst(origin));
+    state.levelUpCelebrationCleanupTimer = window.setTimeout(() => {
+      clearLevelUpCelebration();
+    }, 1100);
+    return true;
+  }
+
   CP.constants = constants;
   CP.state = state;
   CP.dom = dom;
@@ -251,7 +393,8 @@
     escapeHtml,
     clamp,
     formatTime,
-    showToast
+    showToast,
+    playLevelUpCelebration
   };
   CP.model = CP.model || {};
   CP.views = CP.views || {};

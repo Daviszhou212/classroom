@@ -10,7 +10,8 @@
     PET_TYPES,
     AWARD_REVOCATION_WINDOW,
     FEEDBACK_MAX_LENGTH,
-    FEEDBACK_PREVIEW_LIMIT
+    FEEDBACK_PREVIEW_LIMIT,
+    CLAIM_ROSTER_PAGE_SIZE
   } = constants;
   const { app } = state;
   const { mainEl, modalRootEl, modeIndicatorEl } = dom;
@@ -23,7 +24,10 @@
     getPetIcon,
     getPetTypePreviewIcon,
     getPetTypeName,
+    isPetClaimed,
     getPetReAdoptStatus,
+    getPendingClaimStudents,
+    getPetClaimSummary,
     getSortedStudents,
     getDisplayFocusContext,
     getSupervisedFeedVisitedStudentIds,
@@ -238,6 +242,7 @@
     const leavingTeacherStudents = app.view === "teacher-students" && view !== "teacher-students";
     const leavingDisplay = app.view === "display-view" && view !== "display-view";
     const leavingSupervisedFeed = app.view === "supervised-feed-view" && view !== "supervised-feed-view";
+    const leavingPetClaim = app.view === "teacher-pet-claim" && view !== "teacher-pet-claim";
     if (leavingTeacherStudents) {
       clearBulkPointsDraft();
     }
@@ -253,6 +258,11 @@
     }
     if (leavingSupervisedFeed) {
       resetSupervisedFeedSession();
+    }
+    if (leavingPetClaim) {
+      app.ui.claimRosterPage = 0;
+      app.ui.claimDraftPetTypeId = null;
+      app.ui.claimPendingStudentId = null;
     }
     const routeChanged =
       app.view !== view ||
@@ -309,14 +319,18 @@
     app.ui.supervisedFeedSessionActive = false;
     app.ui.supervisedFeedStudentId = null;
     app.ui.supervisedFeedVisitedStudentIds = [];
+    app.ui.supervisedFeedFedStudentIds = [];
     app.ui.supervisedFeedReAdoptDraftTypeId = null;
+    app.ui.supervisedFeedReAdoptExpanded = false;
   }
 
   function startSupervisedFeedSession() {
     app.ui.supervisedFeedSessionActive = true;
     app.ui.supervisedFeedStudentId = null;
     app.ui.supervisedFeedVisitedStudentIds = [];
+    app.ui.supervisedFeedFedStudentIds = [];
     app.ui.supervisedFeedReAdoptDraftTypeId = null;
+    app.ui.supervisedFeedReAdoptExpanded = false;
   }
 
   function markSupervisedFeedVisited(studentId) {
@@ -329,6 +343,22 @@
     app.ui.supervisedFeedVisitedStudentIds = [...visitedIds, studentId];
   }
 
+  function getSupervisedFeedFedStudentIds() {
+    const studentIds = new Set(app.data.students.map((student) => student.id));
+    const fedIds = Array.isArray(app.ui.supervisedFeedFedStudentIds) ? app.ui.supervisedFeedFedStudentIds : [];
+    return fedIds.filter((id, index, list) => studentIds.has(id) && list.indexOf(id) === index);
+  }
+
+  function markSupervisedFeedFed(studentId) {
+    if (!studentId) return;
+    const fedIds = getSupervisedFeedFedStudentIds();
+    if (fedIds.includes(studentId)) {
+      app.ui.supervisedFeedFedStudentIds = fedIds;
+      return;
+    }
+    app.ui.supervisedFeedFedStudentIds = [...fedIds, studentId];
+  }
+
   function selectSupervisedFeedStudent(studentId) {
     const student = getStudentById(studentId);
     const pet = getPetByStudentId(studentId);
@@ -339,11 +369,28 @@
     markSupervisedFeedVisited(studentId);
     app.ui.supervisedFeedStudentId = studentId;
     app.ui.supervisedFeedReAdoptDraftTypeId = null;
+    app.ui.supervisedFeedReAdoptExpanded = false;
     render();
   }
 
   function leaveSupervisedFeedStudent() {
     app.ui.supervisedFeedStudentId = null;
+    app.ui.supervisedFeedReAdoptDraftTypeId = null;
+    app.ui.supervisedFeedReAdoptExpanded = false;
+    render();
+  }
+
+  function openSupervisedFeedReAdopt() {
+    if (!app.auth.teacher || !app.ui.supervisedFeedSessionActive || !app.ui.supervisedFeedStudentId) {
+      showToast("请先由老师开启对应学生的班会喂养回合", "warning");
+      return;
+    }
+    app.ui.supervisedFeedReAdoptExpanded = true;
+    render();
+  }
+
+  function cancelSupervisedFeedReAdopt() {
+    app.ui.supervisedFeedReAdoptExpanded = false;
     app.ui.supervisedFeedReAdoptDraftTypeId = null;
     render();
   }
@@ -359,6 +406,7 @@
       return;
     }
 
+    app.ui.supervisedFeedReAdoptExpanded = true;
     app.ui.supervisedFeedReAdoptDraftTypeId = typeId;
     render();
   }
@@ -533,6 +581,38 @@
         <span class="stat-label">${label}</span>
         <div class="progress"><span style="width:${progress.percent}%"></span></div>
       </div>
+    `;
+  }
+
+  function renderPetClaimProgressPills(summary = getPetClaimSummary()) {
+    if (!summary.total) {
+      return "";
+    }
+    return `
+      <div class="pill-list">
+        <span class="pill">已认领 ${summary.claimedCount}/${summary.total}</span>
+        <span class="pill">${summary.pendingCount ? `待认领 ${summary.pendingCount}` : "全班已完成认领"}</span>
+      </div>
+    `;
+  }
+
+  function renderClaimStatusBanner() {
+    const summary = getPetClaimSummary();
+    if (!summary.total || summary.completed) {
+      return "";
+    }
+    return `
+      <section class="section claim-status-banner">
+        <div class="section-header">
+          <h2>宠物认领未完成</h2>
+          <span class="pill">已认领 ${summary.claimedCount}/${summary.total}</span>
+        </div>
+        <p class="notice">当前还有 ${summary.pendingCount} 名学生待认领。完成前，班会喂养、展示模式、学生查看和学生详情都会保持锁定。</p>
+        <div class="form-actions">
+          <button class="accent" data-action="go-pet-claim">去完成宠物认领</button>
+          <button class="ghost" data-action="go-students">查看学生名单</button>
+        </div>
+      </section>
     `;
   }
 
@@ -982,6 +1062,10 @@
         setModeIndicator("学生管理");
         mainEl.innerHTML = renderTeacherStudents();
         break;
+      case "teacher-pet-claim":
+        setModeIndicator("宠物认领");
+        mainEl.innerHTML = renderTeacherPetClaim();
+        break;
       case "teacher-student-detail":
         setModeIndicator("学生详情");
         mainEl.innerHTML = renderTeacherStudentDetail();
@@ -1151,6 +1235,7 @@
   function renderTeacherStudents() {
     const students = getSortedStudents();
     const editing = app.ui.editingStudentId ? getStudentById(app.ui.editingStudentId) : null;
+    const claimSummary = getPetClaimSummary();
     const selectedIds = getBulkSelectedStudentIds();
     const selectedIdSet = new Set(selectedIds);
     const selectedCount = selectedIds.length;
@@ -1159,6 +1244,7 @@
     const filteredIds = students.map((student) => student.id);
 
     return `
+      ${renderClaimStatusBanner()}
       ${renderAwardBatchSection()}
       <section class="section">
         <h2>${editing ? "编辑学生" : "新增学生"}</h2>
@@ -1178,7 +1264,7 @@
               <input name="group" value="${editing ? escapeHtml(editing.group || "") : ""}" />
             </div>
           </div>
-          <p class="field-hint">拼音搜索会自动生成，无需手动填写拼音或英文名。</p>
+          <p class="field-hint">拼音搜索会自动生成，无需手动填写拼音或英文名。${claimSummary.total ? "新增学生后会进入待认领状态，认领完成前正式流程会被锁定。" : ""}</p>
           <div class="form-actions">
             <button class="primary" type="submit">${editing ? "保存修改" : "添加学生"}</button>
             ${editing ? `<button class="ghost" type="button" data-action="cancel-edit">取消编辑</button>` : ""}
@@ -1277,6 +1363,7 @@
                 <th>${SEAT_LABEL}</th>
                 <th>姓名</th>
                 <th>分组</th>
+                <th>宠物状态</th>
                 <th>积分</th>
                 <th>操作</th>
               </tr>
@@ -1284,6 +1371,8 @@
             <tbody>
               ${students
                 .map((student) => {
+                  const pet = getPetByStudentId(student.id);
+                  const claimed = isPetClaimed(pet);
                   return `
                 <tr class="${selectedIdSet.has(student.id) ? "selected-row" : ""}">
                   <td class="select-cell">
@@ -1298,10 +1387,13 @@
                   <td>${escapeHtml(student.seatNo)}</td>
                   <td>${escapeHtml(student.name)}</td>
                   <td>${escapeHtml(student.group || "-")}</td>
+                  <td>
+                    <span class="pill ${claimed ? "" : "claim-pending-pill"}">${claimed ? `已认领 · ${escapeHtml(getPetTypeName(pet))}` : "待认领"}</span>
+                  </td>
                   <td>${student.points || 0}</td>
                   <td>
                     <div class="table-actions">
-                      <button class="text" data-action="view-student" data-id="${student.id}">详情</button>
+                      <button class="text" data-action="${claimed ? "view-student" : "go-pet-claim"}" data-id="${student.id}">${claimed ? "详情" : "认领"}</button>
                       <button class="text" data-action="edit-student" data-id="${student.id}">编辑</button>
                       <button class="text" data-action="delete-student" data-id="${student.id}">删除</button>
                     </div>
@@ -1314,6 +1406,235 @@
           </table>
         ` : `<p class="notice">还没有学生，请先添加。</p>`}
       </section>
+    `;
+  }
+
+  function renderTeacherPetClaim() {
+    const students = getSortedStudents({ ignoreSearch: true });
+    const pendingStudents = getPendingClaimStudents();
+    const claimSummary = getPetClaimSummary();
+
+    if (!students.length) {
+      return `
+        <section class="section">
+          <div class="section-header">
+            <h2>宠物认领</h2>
+            <button class="ghost" data-action="go-dashboard">返回仪表盘</button>
+          </div>
+          <p class="notice">还没有学生名单。请先导入 CSV，或到学生管理中手动添加学生，再回来完成宠物认领。</p>
+          <div class="form-actions">
+            <button class="accent" data-action="go-import">导入学生名单</button>
+            <button class="ghost" data-action="go-students">学生管理</button>
+          </div>
+        </section>
+      `;
+    }
+
+    const draftPetType = PET_TYPES.find((type) => type.id === app.ui.claimDraftPetTypeId) || null;
+    if (!draftPetType) {
+      app.ui.claimDraftPetTypeId = null;
+    }
+
+    const pendingConfirmStudent = pendingStudents.find((student) => student.id === app.ui.claimPendingStudentId) || null;
+    if (!pendingConfirmStudent) {
+      app.ui.claimPendingStudentId = null;
+    }
+
+    if (!pendingStudents.length) {
+      app.ui.claimRosterPage = 0;
+      app.ui.claimPendingStudentId = null;
+      return `
+        <section class="section">
+          <div class="section-header">
+            <h2>宠物认领</h2>
+            <span class="pill">已完成</span>
+          </div>
+          <p class="notice">全班宠物认领已完成。现在可以进入班会喂养、展示模式和学生查看。</p>
+          ${renderPetClaimProgressPills(claimSummary)}
+        </section>
+
+        <section class="section">
+          <div class="section-header">
+            <h2>学生认领列表</h2>
+            <span class="pill">全班已完成</span>
+          </div>
+          <p class="notice">当前没有待认领学生，无需继续在本页操作。</p>
+        </section>
+      `;
+    }
+
+    const routedPendingStudent = pendingStudents.find((student) => student.id === app.params.id) || null;
+    const focusedStudent = pendingConfirmStudent || routedPendingStudent || null;
+    const rosterPageSize = CLAIM_ROSTER_PAGE_SIZE || 32;
+    const totalRosterPages = Math.max(1, Math.ceil(pendingStudents.length / rosterPageSize));
+    const focusedStudentIndex = focusedStudent ? pendingStudents.findIndex((student) => student.id === focusedStudent.id) : -1;
+    const fallbackRosterPage = clamp(Number(app.ui.claimRosterPage) || 0, 0, totalRosterPages - 1);
+    const rosterPage =
+      focusedStudentIndex >= 0 ? clamp(Math.floor(focusedStudentIndex / rosterPageSize), 0, totalRosterPages - 1) : fallbackRosterPage;
+    app.ui.claimRosterPage = rosterPage;
+    const rosterStart = rosterPage * rosterPageSize;
+    const visibleRosterStudents = pendingStudents.slice(rosterStart, rosterStart + rosterPageSize);
+    const hasRosterPagination = pendingStudents.length > rosterPageSize;
+    const hasPendingConfirmation = Boolean(draftPetType && pendingConfirmStudent);
+    const toolSummaryText = pendingConfirmStudent
+      ? `已为 ${escapeHtml(pendingConfirmStudent.name)} 选定 ${escapeHtml(draftPetType ? draftPetType.name : "")}，点击“确认认领”后生效。`
+      : draftPetType
+        ? `当前宠物为 ${escapeHtml(draftPetType.name)}，请点下方待认领学生姓名进入待确认。`
+        : "先选择一种宠物，再点下方待认领学生姓名进入待确认。";
+    const guideBadgeText = draftPetType ? `当前宠物 ${escapeHtml(draftPetType.name)}` : "先选择宠物";
+    const pendingBadgeText = pendingConfirmStudent ? `待确认 ${escapeHtml(pendingConfirmStudent.name)}` : "未选择学生";
+
+    return `
+      <section class="section">
+        <div class="section-header">
+          <h2>宠物认领</h2>
+          <span class="pill">${claimSummary.completed ? "已完成" : "初始化必做"}</span>
+        </div>
+        <p class="notice">导入学生后，请先陪学生完成宠物认领。完成前，班会喂养、展示模式、学生查看和学生详情都会保持锁定。</p>
+        ${renderPetClaimProgressPills(claimSummary)}
+      </section>
+
+      <section class="section">
+        <div class="section-header">
+          <h2>学生认领列表</h2>
+          <span class="pill">待认领 ${pendingStudents.length}</span>
+        </div>
+        <div class="claim-tool-panel">
+          <div class="claim-tool-summary">
+            <div class="claim-tool-pills">
+              <span class="pill claim-tool-pill">${guideBadgeText}</span>
+              <span class="pill claim-tool-pill">${pendingBadgeText}</span>
+              ${hasRosterPagination ? `<span class="pill">第 ${rosterPage + 1} / ${totalRosterPages} 页</span>` : ""}
+            </div>
+            <p class="notice claim-tool-note">${toolSummaryText}</p>
+          </div>
+          <div class="claim-roster-toolbar">
+            ${hasRosterPagination
+              ? `
+                <div class="form-actions compact-actions claim-roster-pagination">
+                  <button class="ghost small" data-action="claim-roster-prev-page" ${rosterPage === 0 ? "disabled" : ""}>上一页</button>
+                  <button class="ghost small" data-action="claim-roster-next-page" ${rosterPage >= totalRosterPages - 1 ? "disabled" : ""}>下一页</button>
+                </div>
+              `
+              : ""}
+            <div class="form-actions compact-actions claim-tool-actions">
+              <button class="accent" data-action="confirm-claim-student" ${hasPendingConfirmation ? "" : "disabled"}>确认认领</button>
+              <button class="ghost" data-action="cancel-claim-student" ${pendingConfirmStudent ? "" : "disabled"}>取消</button>
+            </div>
+          </div>
+        </div>
+        <div class="claim-pet-draft-grid">
+          ${PET_TYPES.map((type) => `
+            <button
+              type="button"
+              class="claim-pet-draft${draftPetType && draftPetType.id === type.id ? " is-selected" : ""}"
+              data-action="select-claim-pet-type"
+              data-id="${type.id}"
+            >
+              <img class="claim-pet-draft-thumb" src="${getPetTypePreviewIcon(type.id)}" alt="" aria-hidden="true" />
+              <span class="claim-pet-draft-label">${escapeHtml(type.name)}</span>
+            </button>
+          `).join("")}
+        </div>
+        <div class="claim-roster-grid" role="list">
+          ${visibleRosterStudents
+            .map((student) => {
+              const active = focusedStudent && focusedStudent.id === student.id;
+              return `
+                <button
+                  type="button"
+                  class="claim-roster-name is-pending${active ? " is-selected" : ""}"
+                  data-action="queue-claim-student"
+                  data-id="${student.id}"
+                  role="listitem"
+                  title="${escapeHtml(student.name)}"
+                  aria-label="${escapeHtml(`${student.name}，待认领`)}"
+                >
+                  <span class="claim-roster-name-text">${escapeHtml(student.name)}</span>
+                </button>
+              `;
+            })
+            .join("")}
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-header">
+          <h2>当前认领状态</h2>
+          <span class="pill">${draftPetType ? `当前宠物 ${escapeHtml(draftPetType.name)}` : "等待选择宠物"}</span>
+        </div>
+        <p class="notice">
+          ${pendingConfirmStudent
+            ? `当前待确认学生是 ${escapeHtml(pendingConfirmStudent.name)}。确认后会立即完成认领，并保留本次选中的宠物类型以便继续批量操作。`
+            : draftPetType
+              ? `当前宠物已选为 ${escapeHtml(draftPetType.name)}。请继续在上方待认领矩阵中点一个学生姓名。`
+              : "请先在上方选择一种宠物，再从待认领矩阵中点学生姓名。"}
+        </p>
+      </section>
+
+      ${""
+        ? selectedClaimed
+          ? `
+            <section class="section">
+              <div class="section-header">
+                <h2>${escapeHtml(selectedStudent.name)} 的认领结果</h2>
+                <span class="pill">已认领</span>
+              </div>
+              <p class="notice">已完成首次认领。进入班会喂养后，在首次有效喂养前还可以改 1 次宠物。</p>
+              <div class="pet-card">
+                <div class="pet-visual">
+                  <img src="${getPetIcon(selectedPet)}" alt="宠物" />
+                  <div class="badge">等级 ${selectedPet.level}</div>
+                </div>
+                <div class="stat-grid">
+                  <div class="stat-row">
+                    <span class="stat-label">姓名：${escapeHtml(selectedStudent.name)}（${SEAT_LABEL} ${escapeHtml(selectedStudent.seatNo)}）</span>
+                    <span class="pill">积分余额：${selectedStudent.points || 0}</span>
+                  </div>
+                  <div class="stat-row">
+                    <span class="stat-label">宠物：${escapeHtml(getPetTypeName(selectedPet))}</span>
+                    <span class="pill">认领时间：${escapeHtml(formatTime(selectedPet.claimedAt || selectedPet.updatedAt))}</span>
+                  </div>
+                  ${renderXpProgress(selectedPet)}
+                  <div class="stat-row">
+                    <span class="stat-label">饥饿值</span>
+                    <div class="progress"><span style="width:${selectedPet.hunger}%"></span></div>
+                  </div>
+                  <div class="stat-row">
+                    <span class="stat-label">心情值</span>
+                    <div class="progress"><span style="width:${selectedPet.mood}%"></span></div>
+                  </div>
+                </div>
+              </div>
+            </section>
+          `
+          : `
+            <section class="section">
+              <div class="section-header">
+                <h2>为 ${escapeHtml(selectedStudent.name)} 选择宠物</h2>
+                <span class="pill claim-pending-pill">待认领</span>
+              </div>
+              <p class="notice">请学生先完成正式认领。认领后，在首次有效喂养前仍可改 1 次宠物。</p>
+              <div class="grid cols-3 supervised-feed-type-grid">
+                ${PET_TYPES.map((type) => `
+                  <article class="card supervised-feed-type-card claim-type-card">
+                    <img src="${getPetTypePreviewIcon(type.id)}" alt="${escapeHtml(type.name)}" />
+                    <h3>${escapeHtml(type.name)}</h3>
+                    <p>认领后不会随机更换，可在首次喂养前再改 1 次。</p>
+                    <button
+                      class="accent"
+                      data-action="claim-pet"
+                      data-id="${selectedStudent.id}"
+                      data-pet-type="${type.id}"
+                    >
+                      认领这个宠物
+                    </button>
+                  </article>
+                `).join("")}
+              </div>
+            </section>
+          `
+        : ""}
     `;
   }
 
@@ -1378,6 +1699,7 @@
   function renderTeacherImport() {
     return `
       ${renderBackupReminder()}
+      ${renderClaimStatusBanner()}
       <section class="section">
         <h2>导出备份</h2>
         <p>备份文件会保存学生、宠物、积分、流水、教师反馈和系统设置。</p>
@@ -1406,7 +1728,7 @@
 
       <section class="section">
         <h2>导入学生名单（CSV）</h2>
-        <p class="notice">支持格式：${SEAT_LABEL},姓名,分组。第 4 列拼音/英文名可留空；确认后，系统会先自动下载一份当前备份文件，再继续导入。</p>
+        <p class="notice">支持格式：${SEAT_LABEL},姓名,分组。第 4 列拼音/英文名可留空；确认后，系统会先自动下载一份当前备份文件，再继续导入。导入成功后，需要先完成宠物认领，才会开放正式使用流程。</p>
         <div class="pill-list">
           <span class="pill">示例：1,王晨曦,A</span>
           <span class="pill">示例：2,李一凡,</span>
@@ -1430,6 +1752,7 @@
   function renderTeacherSettings() {
     return `
       ${renderBackupReminder()}
+      ${renderClaimStatusBanner()}
       <section class="section">
         <h2>修改教师 PIN</h2>
         <form data-action="change-pin">
@@ -1564,16 +1887,19 @@
     const students = getSortedStudents({ ignoreSearch: true });
     const visitedIds = getSupervisedFeedVisitedStudentIds();
     const visitedIdSet = new Set(visitedIds);
+    const fedIdSet = new Set(getSupervisedFeedFedStudentIds());
     let selectedStudent = app.ui.supervisedFeedStudentId ? getStudentById(app.ui.supervisedFeedStudentId) : null;
     let pet = selectedStudent ? getPetByStudentId(selectedStudent.id) : null;
 
     if (app.ui.supervisedFeedStudentId && (!selectedStudent || !pet)) {
       app.ui.supervisedFeedStudentId = null;
       app.ui.supervisedFeedReAdoptDraftTypeId = null;
+      app.ui.supervisedFeedReAdoptExpanded = false;
       selectedStudent = null;
       pet = null;
     }
 
+    const hasFedThisSession = selectedStudent ? fedIdSet.has(selectedStudent.id) : false;
     const sessionHeader = `
       <section class="section supervised-feed-shell">
         <div class="supervised-feed-session">
@@ -1582,7 +1908,9 @@
             <h2>${selectedStudent ? `${escapeHtml(selectedStudent.name)} 的回合` : "请同学选择自己"}</h2>
             <p>
               ${selectedStudent
-                ? "可以先兑换多份食物，再从背包里选择要喂的食物；也可以本次先不喂、继续攒分后返回名单。"
+                ? hasFedThisSession
+                  ? "本轮已完成喂养。你可以继续兑换食物并从背包里再喂，或直接返回名单继续下一位。"
+                  : "可以先兑换多份食物，再从背包里选择要喂的食物；也可以本次先不喂、继续攒分后返回名单。"
                 : "老师已开启受监督喂养会话。请学生从名单中选择自己，完成后返回名单，由老师手动结束会话。"}
             </p>
           </div>
@@ -1608,7 +1936,7 @@
       return `
         ${sessionHeader}
         <section class="section supervised-feed-shell">
-          <p class="notice">请学生按座号顺序点击自己的卡片进入。本轮已轮到的同学会被标记，但仍可再次进入。</p>
+          <p class="notice">请学生按学号顺序点击自己的卡片进入。本轮已轮到的同学会被标记，但仍可再次进入。</p>
           <div class="grid cols-3 supervised-feed-grid">
             ${students
               .map((student) => {
@@ -1653,52 +1981,66 @@
         ? app.ui.supervisedFeedReAdoptDraftTypeId
         : null;
     const selectedReAdoptType = reAdoptDraftTypeId ? getPetType(reAdoptDraftTypeId) : null;
+    const reAdoptExpanded = reAdoptStatus.available && app.ui.supervisedFeedReAdoptExpanded === true;
     const inventoryEntries = getStudentFoodInventoryEntries(selectedStudent.id);
     const reAdoptSection = reAdoptStatus.available
       ? `
         <section class="section">
           <div class="section-header">
-            <h2>一次重新领养机会</h2>
+            <h2>首次喂养前可改一次宠物</h2>
             <span class="pill">每人仅 1 次</span>
           </div>
           <p class="notice">${escapeHtml(reAdoptStatus.message)}</p>
-          <div class="grid cols-3 supervised-feed-type-grid">
-            ${PET_TYPES.map((type) => {
-              const isCurrent = type.id === pet.petType;
-              const isSelected = type.id === reAdoptDraftTypeId;
-              return `
-                <article class="card supervised-feed-type-card${isCurrent ? " is-current" : ""}${isSelected ? " is-selected" : ""}">
-                  <img src="${getPetTypePreviewIcon(type.id)}" alt="${escapeHtml(type.name)}" />
-                  <h3>${escapeHtml(type.name)}</h3>
-                  <p>${isCurrent ? "这是你当前的宠物" : "可以改为这个宠物类型"}</p>
-                  <button
-                    class="${isCurrent ? "ghost" : isSelected ? "primary" : "accent"}"
-                    data-action="select-supervised-feed-pet-type"
-                    data-id="${type.id}"
-                    ${isCurrent ? "disabled" : ""}
-                  >
-                    ${isCurrent ? "当前宠物" : isSelected ? "已选中" : "选这个"}
-                  </button>
-                </article>
-              `;
-            }).join("")}
+          <div class="supervised-feed-re-adopt-prompt">
+            <div class="form-actions compact-actions supervised-feed-re-adopt-prompt-actions">
+              <button class="ghost" data-action="cancel-supervised-re-adopt">先不改宠物</button>
+              <button class="${reAdoptExpanded ? "primary" : "accent"}" data-action="open-supervised-re-adopt">
+                ${reAdoptExpanded ? "继续选择新宠物" : "我要改宠物"}
+              </button>
+            </div>
           </div>
-          <div class="form-actions compact-actions supervised-feed-re-adopt-actions">
-            <span class="pill">${selectedReAdoptType ? `已选择：${escapeHtml(selectedReAdoptType.name)}` : "请先选择一种新的宠物"}</span>
-            <button
-              class="${selectedReAdoptType ? "accent" : "ghost"}"
-              data-action="confirm-supervised-re-adopt"
-              ${selectedReAdoptType ? "" : "disabled"}
-            >
-              确认重新领养
-            </button>
-          </div>
+          ${reAdoptExpanded
+            ? `
+              <div class="grid cols-3 supervised-feed-type-grid">
+                ${PET_TYPES.map((type) => {
+                  const isCurrent = type.id === pet.petType;
+                  const isSelected = type.id === reAdoptDraftTypeId;
+                  return `
+                    <article class="card supervised-feed-type-card${isCurrent ? " is-current" : ""}${isSelected ? " is-selected" : ""}">
+                      <img src="${getPetTypePreviewIcon(type.id)}" alt="${escapeHtml(type.name)}" />
+                      <h3>${escapeHtml(type.name)}</h3>
+                      <p>${isCurrent ? "这是你当前的宠物" : "可以把当前宠物改成这个类型"}</p>
+                      <button
+                        class="${isCurrent ? "ghost" : isSelected ? "primary" : "accent"}"
+                        data-action="select-supervised-feed-pet-type"
+                        data-id="${type.id}"
+                        ${isCurrent ? "disabled" : ""}
+                      >
+                        ${isCurrent ? "当前宠物" : isSelected ? "已选中" : "选这个"}
+                      </button>
+                    </article>
+                  `;
+                }).join("")}
+              </div>
+              <div class="form-actions compact-actions supervised-feed-re-adopt-actions">
+                <span class="pill">${selectedReAdoptType ? `已选择：${escapeHtml(selectedReAdoptType.name)}` : "请先选择一种新的宠物"}</span>
+                <button class="ghost" data-action="cancel-supervised-re-adopt">取消改宠物</button>
+                <button
+                  class="${selectedReAdoptType ? "accent" : "ghost"}"
+                  data-action="confirm-supervised-re-adopt"
+                  ${selectedReAdoptType ? "" : "disabled"}
+                >
+                  确认改宠物
+                </button>
+              </div>
+            `
+            : ""}
         </section>
       `
       : `
         <section class="section">
           <div class="section-header">
-            <h2>一次重新领养机会</h2>
+            <h2>首次喂养前可改一次宠物</h2>
             <span class="pill">每人仅 1 次</span>
           </div>
           <p class="notice">${escapeHtml(reAdoptStatus.message)}</p>
@@ -1712,7 +2054,7 @@
           <h2>当前学生</h2>
           <div class="form-actions compact-actions">
             <button class="ghost" data-action="return-supervised-feed-roster">返回名单</button>
-            <button class="ghost" data-action="skip-supervised-feed">本次先不喂，继续攒分</button>
+            ${hasFedThisSession ? "" : `<button class="ghost" data-action="skip-supervised-feed">本次先不喂，继续攒分</button>`}
           </div>
         </div>
         <div class="pet-card">
@@ -1748,7 +2090,7 @@
       <section class="section">
         <div class="section-header">
           <h2>兑换食物</h2>
-          <span class="pill">${reAdoptStatus.available ? "建议先领养，再兑换食物" : "先兑换，再从背包喂养"}</span>
+          <span class="pill">${reAdoptStatus.available ? "如想改宠物，建议先改再兑换食物" : "先兑换，再从背包喂养"}</span>
         </div>
         <p class="notice">兑换后会进入你的长期食物背包。本次不喂也会保留，下次班会喂养还能继续使用。</p>
         <div class="grid cols-3">
@@ -2068,9 +2410,10 @@
               const actionLabelMap = {
                 award: "加分",
                 award_revoke: "撤销加分",
+                claim_pet: "宠物认领",
                 buy_food: "兑换食物",
                 feed: "喂食",
-                re_adopt: "重新领养"
+                re_adopt: "改宠物"
               };
               const actionLabel = actionLabelMap[entry.type] || "记录";
               const delta = entry.deltaPoints
@@ -2101,7 +2444,10 @@
   }
 
   function renderSetupChecklist() {
-    if (app.data.students.length > 0) return "";
+    const claimSummary = getPetClaimSummary();
+    if (claimSummary.completed) return "";
+
+    const hasStudents = claimSummary.total > 0;
 
     return `
       <section class="section setup-checklist-section">
@@ -2130,16 +2476,25 @@
           <div class="card task-card setup-task-card">
             <span class="badge setup-step-badge">第 2 步</span>
             <h3>检查学生列表</h3>
-            <p>确认姓名、座号/学号、分组都正确。</p>
+            <p>确认姓名、学号、分组都正确。</p>
             <button class="ghost setup-task-button" data-action="go-students">查看学生</button>
           </div>
           <div class="card task-card setup-task-card">
             <span class="badge setup-step-badge">第 3 步</span>
-            <h3>开始课堂使用</h3>
-            <p>可以先在学生管理里给一位学生加分，再进入班会喂养模式体验首次重新领养与喂养。</p>
+            <h3>完成宠物认领</h3>
+            <p>${hasStudents ? `当前已认领 ${claimSummary.claimedCount}/${claimSummary.total}，请先陪学生完成宠物认领。` : "导入学生后，系统会为每位学生建立待认领的宠物档案。"}</p>
             <div class="form-actions setup-task-actions">
+              <button class="accent setup-task-button" data-action="go-pet-claim" ${hasStudents ? "" : "disabled"}>宠物认领</button>
               <button class="ghost setup-task-button" data-action="go-students">学生管理</button>
-              <button class="ghost setup-task-button" data-action="go-supervised-feed">班会喂养</button>
+            </div>
+          </div>
+          <div class="card task-card setup-task-card">
+            <span class="badge setup-step-badge">第 4 步</span>
+            <h3>开始课堂使用</h3>
+            <p>全员认领完成后，才能进入班会喂养、展示模式和学生查看等正式流程。</p>
+            <div class="form-actions setup-task-actions">
+              <button class="ghost setup-task-button" data-action="go-supervised-feed" ${claimSummary.completed ? "" : "disabled"}>班会喂养</button>
+              <button class="ghost setup-task-button" data-action="go-display" ${claimSummary.completed ? "" : "disabled"}>展示模式</button>
             </div>
           </div>
         </div>
@@ -2148,10 +2503,12 @@
   }
 
   function renderTeacherDashboard() {
+    const claimSummary = getPetClaimSummary();
     const recentLedger = app.data.ledger.slice().sort((a, b) => b.timestamp - a.timestamp).slice(0, 8);
     return `
       ${renderBackupReminder()}
       ${renderDataSafetySection()}
+      ${renderClaimStatusBanner()}
       ${renderSetupChecklist()}
       <section class="section">
         <h2>教师仪表盘</h2>
@@ -2159,7 +2516,12 @@
           <div class="card">
             <span class="badge">学生数量</span>
             <h3>${app.data.students.length}</h3>
-            <p>每位学生自动拥有一个宠物档案。</p>
+            <p>每位学生都会创建宠物档案；未认领前不会随机分配宠物。</p>
+          </div>
+          <div class="card">
+            <span class="badge">认领进度</span>
+            <h3>${claimSummary.total ? `${claimSummary.claimedCount}/${claimSummary.total}` : "-"}</h3>
+            <p>${claimSummary.total ? (claimSummary.completed ? "全班已完成宠物认领。" : `还有 ${claimSummary.pendingCount} 名学生待认领。`) : "导入学生后开始认领。"}</p>
           </div>
           <div class="card">
             <span class="badge">流水记录</span>
@@ -2173,6 +2535,11 @@
         <h2>快捷入口</h2>
         <div class="form-actions">
           <button class="primary" data-action="go-students">学生管理</button>
+          <button
+            class="${claimSummary.total && !claimSummary.completed ? "accent" : "ghost"}"
+            data-action="go-pet-claim"
+            ${claimSummary.completed ? "disabled" : ""}
+          >${claimSummary.completed ? "宠物认领已完成" : "宠物认领"}</button>
           <button class="accent" data-action="go-supervised-feed">班会喂养</button>
           <button class="ghost" data-action="go-import">导入导出</button>
           <button class="ghost" data-action="go-settings">系统设置</button>
@@ -2203,8 +2570,11 @@
     resetSupervisedFeedSession,
     startSupervisedFeedSession,
     markSupervisedFeedVisited,
+    markSupervisedFeedFed,
     selectSupervisedFeedStudent,
     leaveSupervisedFeedStudent,
+    openSupervisedFeedReAdopt,
+    cancelSupervisedFeedReAdopt,
     selectSupervisedFeedReAdoptType,
     endSupervisedFeedSession,
     openDisplayFocus,
@@ -2230,6 +2600,7 @@
     renderTeacherLogin,
     renderTeacherDashboard,
     renderTeacherStudents,
+    renderTeacherPetClaim,
     renderTeacherStudentDetail,
     renderTeacherImport,
     renderTeacherSettings,

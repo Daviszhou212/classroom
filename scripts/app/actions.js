@@ -21,8 +21,11 @@
     getCatalogItem,
     getPetByStudentId,
     getPetTypeName,
+    hasStudentFeedHistory,
+    isPetClaimed,
     isPetEligibleForReAdopt,
     getPetReAdoptStatus,
+    getPendingClaimStudents,
     addLedgerEntry,
     addAwardBatch,
     getAwardBatchById,
@@ -490,8 +493,13 @@
 
   function buyFoodForStudent(studentId, catalogId) {
     const student = getStudentById(studentId);
+    const pet = getPetByStudentId(studentId);
     const item = getCatalogItem(catalogId);
-    if (!student || !item) return false;
+    if (!student || !pet || !item) return false;
+    if (!isPetClaimed(pet)) {
+      showToast("请先完成宠物认领，再兑换食物", "warning");
+      return false;
+    }
     if ((student.points || 0) < item.pricePoints) {
       showToast("积分不足，无法兑换这份食物", "warning");
       return false;
@@ -530,14 +538,18 @@
     const student = getStudentById(studentId);
     const pet = getPetByStudentId(studentId);
     const item = getCatalogItem(catalogId);
-    if (!student || !pet || !item) return false;
+    if (!student || !pet || !item) return { ok: false, leveledUp: false };
+    if (!isPetClaimed(pet)) {
+      showToast("请先完成宠物认领，再进行喂养", "warning");
+      return { ok: false, leveledUp: false };
+    }
 
     const nextInventory = Array.isArray(student.foodInventory) ? [...student.foodInventory] : [];
     const inventoryIndex = nextInventory.findIndex((entry) => entry.catalogId === item.id);
     const currentQuantity = inventoryIndex >= 0 ? Number(nextInventory[inventoryIndex].quantity) || 0 : 0;
     if (currentQuantity <= 0) {
       showToast("背包里还没有这份食物，请先兑换", "warning");
-      return false;
+      return { ok: false, leveledUp: false };
     }
 
     if (currentQuantity === 1) {
@@ -572,6 +584,62 @@
 
     saveData();
     showToast(leveledUp ? "喂养成功，宠物升级！" : "喂养成功", "info");
+    return { ok: true, leveledUp };
+  }
+
+  function claimPetForStudent(studentId, targetPetTypeId, options = {}) {
+    const student = getStudentById(studentId);
+    const pet = getPetByStudentId(studentId);
+    const targetType = PET_TYPES.find((type) => type.id === targetPetTypeId);
+
+    if (!app.auth.teacher) {
+      showToast("请先进入教师模式", "warning");
+      return false;
+    }
+    if (!student || !pet || !targetType) {
+      showToast("请选择有效的学生和宠物类型", "warning");
+      return false;
+    }
+    if (isPetClaimed(pet)) {
+      showToast(`${student.name} 已完成宠物认领`, "warning");
+      return false;
+    }
+    if (options.skipConfirm !== true && !confirm(`确认让 ${student.name} 认领“${targetType.name}”吗？认领后在首次喂养前还可改 1 次宠物。`)) {
+      return false;
+    }
+
+    const now = Date.now();
+    pet.petType = targetPetTypeId;
+    pet.claimStatus = "claimed";
+    pet.claimedAt = now;
+    pet.updatedAt = now;
+    pet.reAdoptAvailable = !pet.reAdoptedAt && !hasStudentFeedHistory(studentId);
+
+    addLedgerEntry({
+      timestamp: now,
+      studentId: student.id,
+      type: "claim_pet",
+      reason: `宠物认领：${targetType.name}`
+    });
+
+    saveData();
+
+    if (options.skipRedirect === true) {
+      showToast(`已为 ${student.name} 认领 ${targetType.name}`, "info");
+      return {
+        ok: true,
+        studentId: student.id,
+        petTypeId: targetType.id
+      };
+    }
+
+    const nextPendingStudent = getPendingClaimStudents()[0] || null;
+    setView("teacher-pet-claim", nextPendingStudent ? { id: nextPendingStudent.id } : { id: student.id });
+    if (nextPendingStudent) {
+      showToast(`${student.name} 已认领 ${targetType.name}，请继续完成剩余学生的宠物认领`, "info");
+    } else {
+      showToast("全班宠物认领已完成，现在可以进入正常使用流程", "info");
+    }
     return true;
   }
 
@@ -598,7 +666,7 @@
     }
 
     const previousTypeName = getPetTypeName(pet);
-    if (!confirm(`确认把宠物从“${previousTypeName}”改为“${targetType.name}”吗？此机会每人只有一次。`)) {
+    if (!confirm(`确认把宠物从“${previousTypeName}”改为“${targetType.name}”吗？首次认领后只能改这一次。`)) {
       return false;
     }
 
@@ -612,12 +680,13 @@
       timestamp: now,
       studentId: student.id,
       type: "re_adopt",
-      reason: `重新领养：${previousTypeName} -> ${targetType.name}`
+      reason: `首次认领后改宠：${previousTypeName} -> ${targetType.name}`
     });
 
     app.ui.supervisedFeedReAdoptDraftTypeId = null;
+    app.ui.supervisedFeedReAdoptExpanded = false;
     saveData();
-    showToast(`重新领养成功，已换成${targetType.name}`, "info");
+    showToast(`改宠成功，已换成${targetType.name}`, "info");
     return true;
   }
 
@@ -755,9 +824,12 @@
       app.data.ledger = [];
       app.data.awardBatches = [];
       syncData();
+      app.ui.claimRosterPage = 0;
+      app.ui.claimDraftPetTypeId = null;
+      app.ui.claimPendingStudentId = null;
       clearBulkSelection({ clearDrafts: true });
-      showToast("学生名单导入成功", "info");
-      setView("teacher-students");
+      showToast("学生名单导入成功，请先完成宠物认领", "info");
+      setView("teacher-pet-claim");
     };
     reader.readAsText(file, "utf-8");
   }
@@ -776,6 +848,7 @@
     revokeAwardEntry,
     buyFoodForStudent,
     feedStudent,
+    claimPetForStudent,
     reAdoptPetForStudent,
     validateImport,
     importData,

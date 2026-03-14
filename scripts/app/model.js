@@ -495,6 +495,7 @@
     );
     normalized.pets = normalized.pets.map((pet) => {
       const normalizedPet = { ...pet };
+      ensurePetClaimState(normalizedPet);
       ensurePetType(normalizedPet);
       ensurePetReAdoptState(normalizedPet, {
         hasFeedHistory: feedHistoryStudentIds.has(normalizedPet.studentId)
@@ -535,6 +536,7 @@
       app.data.ledger.filter((entry) => entry.type === "feed" && entry.studentId).map((entry) => entry.studentId)
     );
     app.data.pets.forEach((pet) => {
+      ensurePetClaimState(pet);
       ensurePetType(pet);
       ensurePetReAdoptState(pet, { hasFeedHistory: feedHistoryStudentIds.has(pet.studentId) });
     });
@@ -547,12 +549,14 @@
     return {
       id: makeId("pet"),
       studentId: student.id,
-      petType: pickPetTypeId(),
+      petType: null,
       petName: `${student.name}的小伙伴`,
       level: 1,
       xp: 0,
       hunger: app.data.config.rules.defaultHunger,
       mood: app.data.config.rules.defaultMood,
+      claimStatus: "pending",
+      claimedAt: null,
       reAdoptAvailable: true,
       reAdoptedAt: null,
       updatedAt: now
@@ -609,10 +613,49 @@
     return PET_TYPES[index].id;
   }
 
-  function ensurePetType(pet) {
-    if (!pet.petType || !PET_TYPES.some((type) => type.id === pet.petType)) {
-      pet.petType = pickPetTypeId();
+  function getStoredPetTypeId(pet) {
+    return typeof (pet && pet.petType) === "string" ? pet.petType.trim() : "";
+  }
+
+  function isValidPetTypeId(typeId) {
+    return PET_TYPES.some((type) => type.id === typeId);
+  }
+
+  function ensurePetClaimState(pet) {
+    const rawTypeId = getStoredPetTypeId(pet);
+    const normalizedUpdatedAt = Number(pet.updatedAt) || Date.now();
+    const nextTypeId = !rawTypeId ? null : isValidPetTypeId(rawTypeId) ? rawTypeId : pickPetTypeId();
+    const hasClaimedType = Boolean(nextTypeId);
+
+    pet.petType = nextTypeId;
+    pet.updatedAt = normalizedUpdatedAt;
+
+    if (hasClaimedType) {
+      pet.claimStatus = "claimed";
+      pet.claimedAt = Number(pet.claimedAt) || normalizedUpdatedAt;
+      return pet.claimStatus;
     }
+
+    pet.claimStatus = "pending";
+    pet.claimedAt = null;
+    return pet.claimStatus;
+  }
+
+  function isPetClaimed(pet) {
+    return Boolean(pet && pet.claimStatus === "claimed" && isValidPetTypeId(getStoredPetTypeId(pet)));
+  }
+
+  function ensurePetType(pet) {
+    const typeId = getStoredPetTypeId(pet);
+    if (!typeId) {
+      pet.petType = null;
+      return pet.petType;
+    }
+    if (!isValidPetTypeId(typeId)) {
+      pet.petType = pickPetTypeId();
+      return pet.petType;
+    }
+    pet.petType = typeId;
     return pet.petType;
   }
 
@@ -626,15 +669,19 @@
     const storedAvailability =
       typeof pet.reAdoptAvailable === "boolean"
         ? pet.reAdoptAvailable
-        : !reAdoptedAt;
+        : true;
 
     pet.reAdoptedAt = reAdoptedAt;
+    if (!isPetClaimed(pet)) {
+      pet.reAdoptAvailable = storedAvailability;
+      return;
+    }
     pet.reAdoptAvailable = !reAdoptedAt && !hasFeedHistory && storedAvailability;
   }
 
   function getPetIcon(pet) {
-    if (!pet) {
-      return getPetTypePreviewIcon(PET_TYPES[0] && PET_TYPES[0].id);
+    if (!pet || !isPetClaimed(pet)) {
+      return "assets/pet.svg";
     }
     const petType = getPetType(pet.petType);
     const variants = Array.isArray(petType.variants) ? petType.variants : [];
@@ -645,6 +692,9 @@
   }
 
   function getPetTypeName(pet) {
+    if (!isPetClaimed(pet)) {
+      return "待认领";
+    }
     return getPetType(pet.petType).name;
   }
 
@@ -656,35 +706,65 @@
       };
     }
 
+    if (!isPetClaimed(pet)) {
+      return {
+        available: false,
+        message: "请先完成首次宠物认领，再决定是否改一次宠物。"
+      };
+    }
+
     if (pet.reAdoptedAt) {
       return {
         available: false,
-        message: "重新领养机会已使用，之后只能继续照顾当前宠物。"
+        message: "首次认领后的改宠机会已使用，之后只能继续照顾当前宠物。"
       };
     }
 
     if (hasStudentFeedHistory(studentId)) {
       return {
         available: false,
-        message: "首次喂养后不可重新领养，请继续照顾当前宠物。"
+        message: "首次喂养后不能再改宠物，请继续照顾当前宠物。"
       };
     }
 
     if (pet.reAdoptAvailable === false) {
       return {
         available: false,
-        message: "重新领养机会已使用，之后只能继续照顾当前宠物。"
+        message: "首次认领后的改宠机会已使用，之后只能继续照顾当前宠物。"
       };
     }
 
     return {
       available: true,
-      message: "你还有 1 次重新领养机会。更换后不会影响等级、经验、饥饿值、心情值和积分。"
+      message: "你已完成首次认领，在首次喂养前还可以改 1 次宠物。更换后不会影响等级、经验、饥饿值、心情值和积分。"
     };
   }
 
   function isPetEligibleForReAdopt(studentId, pet) {
     return getPetReAdoptStatus(studentId, pet).available;
+  }
+
+  function getPendingClaimStudents() {
+    return getSortedStudents({ ignoreSearch: true }).filter((student) => !isPetClaimed(getPetByStudentId(student.id)));
+  }
+
+  function getPetClaimSummary() {
+    const total = app.data.students.length;
+    const claimedCount = app.data.students.reduce(
+      (count, student) => count + (isPetClaimed(getPetByStudentId(student.id)) ? 1 : 0),
+      0
+    );
+    const pendingCount = Math.max(0, total - claimedCount);
+    return {
+      total,
+      claimedCount,
+      pendingCount,
+      completed: total > 0 && pendingCount === 0
+    };
+  }
+
+  function isClassPetClaimComplete() {
+    return getPetClaimSummary().completed;
   }
 
   function getStudentFoodInventoryEntries(studentId) {
@@ -1123,6 +1203,10 @@
     getPetTypePreviewIcon,
     getPetVariantIndex,
     pickPetTypeId,
+    getStoredPetTypeId,
+    isValidPetTypeId,
+    ensurePetClaimState,
+    isPetClaimed,
     ensurePetType,
     hasStudentFeedHistory,
     ensurePetReAdoptState,
@@ -1130,6 +1214,9 @@
     getPetTypeName,
     getPetReAdoptStatus,
     isPetEligibleForReAdopt,
+    getPendingClaimStudents,
+    getPetClaimSummary,
+    isClassPetClaimComplete,
     getSortedStudents,
     getDisplayStudents,
     normalizeSearchText,

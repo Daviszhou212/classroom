@@ -1,10 +1,10 @@
 (function (window) {
   const CP = window.ClassroomPetApp;
   const { constants, state, dom, utils, model, views, actions } = CP;
-  const { DEFAULT_DATA, SEAT_LABEL, PIN_RULE_LABEL, RECOVERY_CODE } = constants;
+  const { DEFAULT_DATA, SEAT_LABEL, PIN_RULE_LABEL, RECOVERY_CODE, CLAIM_ROSTER_PAGE_SIZE } = constants;
   const { app } = state;
   const { mainEl, modalRootEl } = dom;
-  const { clone, clamp, showToast } = utils;
+  const { clone, clamp, showToast, playLevelUpCelebration } = utils;
   const {
     loadData,
     saveData,
@@ -13,6 +13,9 @@
     getPetByStudentId,
     getSortedStudents,
     getDisplayStudents,
+    getPendingClaimStudents,
+    getPetClaimSummary,
+    isClassPetClaimComplete,
     getBulkSelectedStudentIds,
     setBulkSelectedStudentIds,
     toggleBulkSelectedStudent,
@@ -30,9 +33,12 @@
     setView,
     logoutTeacher,
     startSupervisedFeedSession,
+    markSupervisedFeedFed,
     selectSupervisedFeedStudent,
     selectSupervisedFeedReAdoptType,
     leaveSupervisedFeedStudent,
+    openSupervisedFeedReAdopt,
+    cancelSupervisedFeedReAdopt,
     endSupervisedFeedSession,
     openDisplayFocus,
     closeDisplayFocus,
@@ -57,15 +63,71 @@
     submitFeedback,
     buyFoodForStudent,
     feedStudent,
+    claimPetForStudent,
     reAdoptPetForStudent,
     importData,
     importStudentsCsv
   } = actions;
 
+  function getPetClaimRequiredToast(teacherMode = false) {
+    const summary = getPetClaimSummary();
+    if (!summary.total) {
+      return teacherMode ? "请先添加或导入学生名单" : "请老师先添加学生名单";
+    }
+    return teacherMode
+      ? `当前还有 ${summary.pendingCount} 名学生待认领，请先完成宠物认领`
+      : "请老师先完成宠物认领";
+  }
+
+  function guardPetClaimAccess(options = {}) {
+    if (!app.data.students.length || isClassPetClaimComplete()) {
+      return false;
+    }
+
+    const teacherRedirect = options.teacherRedirect === true && app.auth.teacher;
+    showToast(getPetClaimRequiredToast(teacherRedirect), "warning");
+    if (teacherRedirect) {
+      setView("teacher-pet-claim", options.studentId ? { id: options.studentId } : {});
+    }
+    return true;
+  }
+
+  function openStudentViewIfReady() {
+    if (guardPetClaimAccess()) {
+      return;
+    }
+    setView("student-view");
+  }
+
+  function openDisplayViewIfReady() {
+    if (app.auth.teacher) {
+      setView("display-view");
+      return;
+    }
+    if (guardPetClaimAccess()) {
+      return;
+    }
+    setView("display-view");
+  }
+
+  function openClaimRosterPage(nextPage) {
+    const students = getPendingClaimStudents();
+    if (!students.length) {
+      return;
+    }
+
+    const pageSize = CLAIM_ROSTER_PAGE_SIZE || 32;
+    const totalPages = Math.max(1, Math.ceil(students.length / pageSize));
+    const safePage = clamp(Number(nextPage) || 0, 0, totalPages - 1);
+    app.ui.claimRosterPage = safePage;
+    app.ui.claimPendingStudentId = null;
+    setView("teacher-pet-claim");
+  }
+
   function bindEvents() {
     document.getElementById("homeBtn").addEventListener("click", () => setView("home"));
     document.getElementById("teacherBtn").addEventListener("click", () => setView("teacher-dashboard"));
-    document.getElementById("displayBtn").addEventListener("click", () => setView("display-view"));
+    document.getElementById("displayBtn").addEventListener("click", () => openDisplayViewIfReady());
     const teacherHomeBtn = document.getElementById("teacherHomeBtn");
     const logoutBtn = document.getElementById("logoutBtn");
     if (teacherHomeBtn) teacherHomeBtn.addEventListener("click", () => setView("teacher-dashboard"));
@@ -139,8 +201,20 @@
           }
           openFeedbackModal();
           break;
+        case "go-pet-claim":
+          if (!app.auth.teacher) {
+            setView("teacher-dashboard");
+            return;
+          }
+          if (isClassPetClaimComplete()) {
+            showToast("全班已完成宠物认领，快捷入口已关闭", "info");
+            setView("teacher-dashboard");
+            return;
+          }
+          setView("teacher-pet-claim", actionEl.dataset.id ? { id: actionEl.dataset.id } : {});
+          break;
         case "go-student":
-          setView("student-view");
+          openStudentViewIfReady();
           break;
         case "go-supervised-feed":
           if (!app.auth.teacher) {
@@ -151,11 +225,14 @@
             showToast("当前还没有学生记录，请先添加或导入学生名单", "warning");
             return;
           }
+          if (guardPetClaimAccess({ teacherRedirect: true })) {
+            return;
+          }
           startSupervisedFeedSession();
           setView("supervised-feed-view");
           break;
         case "go-display":
-          setView("display-view");
+          openDisplayViewIfReady();
           break;
         case "logout-teacher":
           app.ui.authScreen = "login";
@@ -229,13 +306,91 @@
           break;
         }
         case "view-student":
+          if (guardPetClaimAccess({ teacherRedirect: true, studentId: actionEl.dataset.id })) {
+            return;
+          }
           setView("teacher-student-detail", { id: actionEl.dataset.id });
+          break;
+        case "select-claim-pet-type":
+          app.ui.claimDraftPetTypeId = actionEl.dataset.id || null;
+          render();
+          break;
+        case "select-claim-student":
+          setView("teacher-pet-claim", { id: actionEl.dataset.id });
+          break;
+        case "queue-claim-student":
+          if (!app.ui.claimDraftPetTypeId) {
+            showToast("请先选择一种宠物，再点学生姓名", "warning");
+            return;
+          }
+          app.ui.claimPendingStudentId = actionEl.dataset.id || null;
+          setView("teacher-pet-claim", { id: actionEl.dataset.id });
+          break;
+        case "claim-roster-prev-page":
+          openClaimRosterPage((Number(app.ui.claimRosterPage) || 0) - 1);
+          break;
+        case "claim-roster-next-page":
+          openClaimRosterPage((Number(app.ui.claimRosterPage) || 0) + 1);
+          break;
+        case "cancel-claim-student":
+          app.ui.claimPendingStudentId = null;
+          render();
+          break;
+        case "confirm-claim-student": {
+          if (!app.ui.claimDraftPetTypeId || !app.ui.claimPendingStudentId) {
+            showToast("请先选择宠物并点一个学生姓名", "warning");
+            return;
+          }
+
+          const pageSize = CLAIM_ROSTER_PAGE_SIZE || 32;
+          const currentPage = Math.max(0, Number(app.ui.claimRosterPage) || 0);
+          const pendingBefore = getPendingClaimStudents();
+          const currentIndex = pendingBefore.findIndex((student) => student.id === app.ui.claimPendingStudentId);
+          const pageStart = currentPage * pageSize;
+          const localIndex = currentIndex >= 0 ? currentIndex - pageStart : 0;
+          const claimResult = claimPetForStudent(app.ui.claimPendingStudentId, app.ui.claimDraftPetTypeId, {
+            skipConfirm: true,
+            skipRedirect: true
+          });
+
+          if (!claimResult || claimResult.ok !== true) {
+            return;
+          }
+
+          app.ui.claimPendingStudentId = null;
+          const pendingAfter = getPendingClaimStudents();
+          if (!pendingAfter.length) {
+            app.ui.claimRosterPage = 0;
+            setView("teacher-pet-claim");
+            return;
+          }
+
+          const totalPages = Math.max(1, Math.ceil(pendingAfter.length / pageSize));
+          const safePage = clamp(currentPage, 0, totalPages - 1);
+          const pageSlice = pendingAfter.slice(safePage * pageSize, safePage * pageSize + pageSize);
+          const targetPage =
+            pageSlice.length > 0
+              ? safePage
+              : clamp(safePage - 1, 0, Math.max(totalPages - 1, 0));
+
+          app.ui.claimRosterPage = targetPage;
+          setView("teacher-pet-claim");
+          break;
+        }
+        case "claim-pet":
+          claimPetForStudent(actionEl.dataset.id, actionEl.dataset.petType);
           break;
         case "select-supervised-feed-student":
           selectSupervisedFeedStudent(actionEl.dataset.id);
           break;
         case "select-supervised-feed-pet-type":
           selectSupervisedFeedReAdoptType(actionEl.dataset.id);
+          break;
+        case "open-supervised-re-adopt":
+          openSupervisedFeedReAdopt();
+          break;
+        case "cancel-supervised-re-adopt":
+          cancelSupervisedFeedReAdopt();
           break;
         case "confirm-supervised-re-adopt":
           reAdoptPetForStudent(app.ui.supervisedFeedStudentId, app.ui.supervisedFeedReAdoptDraftTypeId);
@@ -258,8 +413,19 @@
             showToast("请先由老师开启班会喂养会话", "warning");
             return;
           }
-          feedStudent(app.ui.supervisedFeedStudentId, actionEl.dataset.id);
+          const feedResult = feedStudent(app.ui.supervisedFeedStudentId, actionEl.dataset.id);
+          if (feedResult.ok) {
+            markSupervisedFeedFed(app.ui.supervisedFeedStudentId);
+          }
           render();
+          if (feedResult.ok && feedResult.leveledUp) {
+            window.requestAnimationFrame(() => {
+              playLevelUpCelebration({
+                anchorEl: mainEl.querySelector(".pet-card .pet-visual"),
+                fallbackEl: mainEl
+              });
+            });
+          }
           break;
         case "end-supervised-feed-session":
           endSupervisedFeedSession();
@@ -316,6 +482,9 @@
             bulkPointsDraft: "",
             bulkReasonTemplateDraft: "",
             bulkReasonCustomDraft: "",
+            claimRosterPage: 0,
+            claimDraftPetTypeId: null,
+            claimPendingStudentId: null,
             awardBatchPage: 0,
             displaySearch: "",
             displayPage: 0,
@@ -325,7 +494,9 @@
             supervisedFeedSessionActive: false,
             supervisedFeedStudentId: null,
             supervisedFeedVisitedStudentIds: [],
+            supervisedFeedFedStudentIds: [],
             supervisedFeedReAdoptDraftTypeId: null,
+            supervisedFeedReAdoptExpanded: false,
             feedbackModalOpen: false,
             feedbackDraft: ""
           };
@@ -619,7 +790,7 @@
             };
             app.data.students.push(newStudent);
             app.data.pets.push(createPetForStudent(newStudent));
-            showToast("学生已添加", "info");
+            showToast("学生已添加，请继续完成宠物认领", "info");
           }
           saveData();
           form.reset();
@@ -678,7 +849,7 @@
         app.ui.displaySearchComposing = false;
         app.ui.displaySearch = event.target.value;
         app.ui.displayPage = 0;
-        preserveInputFocus("displaySearch", render);
+        scheduleFocusedInputRender("displaySearchRenderTimer", "displaySearch", render);
       }
     });
 
@@ -694,11 +865,10 @@
       }
       if (event.target.id === "studentSearch") {
         app.ui.studentSearch = event.target.value;
-        render();
+        scheduleFocusedInputRender("studentSearchRenderTimer", "studentSearch", render);
       }
       if (event.target.id === "bulkPointsDraft") {
         app.ui.bulkPointsDraft = event.target.value;
-        preserveInputFocus("bulkPointsDraft", render);
       }
       if (event.target.id === "bulkReasonCustomDraft") {
         app.ui.bulkReasonCustomDraft = event.target.value;
@@ -710,7 +880,7 @@
         }
         app.ui.displaySearch = event.target.value;
         app.ui.displayPage = 0;
-        preserveInputFocus("displaySearch", render);
+        scheduleFocusedInputRender("displaySearchRenderTimer", "displaySearch", render);
       }
     });
 
@@ -751,6 +921,18 @@
         next.setSelectionRange(start, end);
       }
     });
+  }
+
+  function scheduleFocusedInputRender(timerKey, inputId, updateFn, delay = 120) {
+    if (state[timerKey]) {
+      clearTimeout(state[timerKey]);
+      state[timerKey] = null;
+    }
+
+    state[timerKey] = window.setTimeout(() => {
+      state[timerKey] = null;
+      preserveInputFocus(inputId, updateFn);
+    }, delay);
   }
 
   function preserveScrollPosition(updateFn) {
